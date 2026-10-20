@@ -187,8 +187,10 @@ export function createRenderer({ device, context, format, shaderParts, world, mo
     const f32 = new Float32Array(data);
     const DEG = Math.PI / 180;
     const glow = opts.glow ?? 0;
+    // 16 floats (4 vec4) per model: mesh(4u) + info(4) + extra(4) + mat(4).
+    const STRIDE = 16;
     const write = (i, m, scaleMul, yawDeg) => {
-      const o = i * 12;
+      const o = i * STRIDE;
       // mesh = (vertexOffset, vertexCount, indexOffset, jointOffset)
       u32[o + 0] = m.mesh.vertexOffset;
       u32[o + 1] = m.mesh.vertexCount;
@@ -202,6 +204,16 @@ export function createRenderer({ device, context, format, shaderParts, world, mo
       f32[o + 7] = m.info.frameCount;
       f32[o + 8] = (yawDeg || 0) * DEG; // model-forward correction
       f32[o + 9] = glow;                // emissive map strength
+      f32[o + 10] = 0;                  // extra.z reserved
+      f32[o + 11] = 0;
+      // mat = (emissive factor rgb, base-colour factor r). The shaders use
+      // these so the glow and albedo match the GLB, not a fixed tint.
+      const ef = m.emissiveFactor || [0, 0, 0];
+      const bf = m.baseColorFactor || [1, 1, 1];
+      f32[o + 12] = ef[0];
+      f32[o + 13] = ef[1];
+      f32[o + 14] = ef[2];
+      f32[o + 15] = bf[0];
     };
     write(0, models.boid, opts.boidScale ?? 1, opts.boidYaw);
     write(1, models.predator, opts.predatorScale ?? 1, opts.predatorYaw);

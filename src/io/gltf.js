@@ -137,6 +137,29 @@ export function materialEmissive(json, materialIndex) {
   return { textureSource: tex, factor };
 }
 
+// Alpha handling for a material. glTF defines three modes:
+//   OPAQUE (default) — alpha ignored entirely
+//   MASK             — alpha tested against `alphaCutoff`
+//   BLEND            — alpha blended
+// The phoenix uses BLEND so its feather gaps live in the base-colour alpha;
+// we render those as a cut-out (see shaders/render/models.wgsl). `cutoff`
+// carries MASK's threshold, and BLEND gets a small default so soft edges still
+// read as gaps without the mesh turning into confetti.
+export function materialAlpha(json, materialIndex) {
+  const mat = (json.materials || [])[materialIndex];
+  if (!mat) return { mode: "OPAQUE", cutoff: 0.5, doubleSided: false };
+  const mode = mat.alphaMode || "OPAQUE";
+  const cutoff = mat.alphaCutoff != null ? mat.alphaCutoff : 0.5;
+  return { mode, cutoff, doubleSided: !!mat.doubleSided };
+}
+
+// Base-colour multiplier (the material's flat tint over the texture), default white.
+export function materialBaseColorFactor(json, materialIndex) {
+  const mat = (json.materials || [])[materialIndex];
+  const f = mat && mat.pbrMetallicRoughness && mat.pbrMetallicRoughness.baseColorFactor;
+  return f ? [f[0], f[1], f[2]] : [1, 1, 1];
+}
+
 // Compose a node's local matrix from TRS or a raw matrix.
 export function nodeLocalMatrix(node) {
   if (node.matrix) return Float32Array.from(node.matrix);

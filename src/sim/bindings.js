@@ -23,7 +23,7 @@ export const GRID_WORDS = 3 * MAX_CELLS + SCAN_BLOCKS + CAPACITY.boids + 8;
 // to fit the baked geometry + joint frames; this is just a safe starting size.
 export const MODEL_POOL_BYTES = 8 * 1024 * 1024;
 // 4 models x (vec4<u32> + 2 x vec4<f32>) = 4 x 48 bytes.
-export const MODEL_INFO_BYTES = 192;
+export const MODEL_INFO_BYTES = 256;
 
 const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 const UNIFORM = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;

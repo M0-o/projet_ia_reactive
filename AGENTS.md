@@ -14,7 +14,7 @@ harness.
   in a WebGPU-capable browser (recent Chrome/Edge). WebGPU needs a secure
   context; `localhost` counts as secure.
 - `npm test` → runs `test/harness.mjs` headlessly against Dawn (`webgpu` npm
-  bindings). Currently **37 tests pass**.
+  bindings). Currently **38 tests pass**.
 - There is **no** build/lint step.
 
 ## Layout
@@ -69,7 +69,8 @@ GLB pipeline:
   multi-material mesh still draws in a single call. Decoding uses
   `createImageBitmap` + `OffscreenCanvas` in the browser.
 - `src/render/renderer.js` — uploads the pool + both atlases once, writes the
-  per-model `ModelInfo` uniform each frame (size multiplier + yaw + glow), and
+  per-model `ModelInfo` uniform each frame (mesh offsets, size multiplier, yaw,
+  glow, and the GLB's emissive/base-colour factors), and
   issues one `draw()` per model type (no index buffer; the shader walks indices
   itself).
 
@@ -140,10 +141,23 @@ on `globalThis.AL`:
   so the vertex shaders draw a model at exactly its physics radius and the drawn
   mesh lines up with its hitbox. "Boid/Predator radius" and "… model scale"
   therefore scale the model and its hitbox together.
-- The emissive atlas drives the predator/phoenix glow, added on top of the lit
-  colour (so it reads at night) and scaled by the "Model glow strength" slider
-  (`ModelInfo.extra.y`). Predator materials use `alphaMode: BLEND`; the renderer
-  does **not** cut out on alpha, so thin glow parts never disappear.
+- **Alpha cut-out restores the phoenix's feather gaps.** Both predator materials
+  declare `alphaMode: BLEND` and `doubleSided: true`, and the base-colour PNGs are
+  real RGBA: roughly 9–18% of each is fully transparent and another 3–7% partial —
+  that transparency *is* the space between the feathers. `bakeModel` flattens the
+  glTF `alphaMode`/`alphaCutoff` into the **previously-unused vertex `.w` slots**
+  (mode ordinal at word `+3`, cutoff at `+7`), and `fsModel` `discard`s fragments
+  whose sampled alpha falls below the cutoff whenever the mode is MASK or BLEND
+  (BLEND uses the same threshold; a true blend would need sorted overdraw and a
+  pipeline blend state). OPAQUE models — boid and obstacle — never cut out.
+- The emissive atlas drives the predator/phoenix glow. It is added on top of the
+  lit colour (so it reads at night) but treated as **lighting-independent per
+  glTF**, and multiplied by the material's own `emissiveFactor` (carried in
+  `ModelInfo.mat.xyz`) before the "Model glow strength" slider (`ModelInfo.extra.y`)
+  scales it. The albedo is the sampled texture times the GLB `baseColorFactor`
+  (`ModelInfo.mat.w`), so the model's real colours show; the old hard-coded
+  `PREDATOR_TINT`/`* 1.25` boost is gone and the type tint is only a 8% nudge for
+  readability.
 - Obstacles are generated at **varied sizes** (each 0.4×–1.8× the "Obstacle
   radius" slider, stored per-instance in `Point.posR.w`). The obstacles get their
   own hitbox ring in the `hitbox` debug overlay.

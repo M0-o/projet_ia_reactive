@@ -24,6 +24,11 @@ struct MOut {
   @location(3) tint   : vec3<f32>,
   @location(4) emissiveUV : vec2<f32>,
   @location(5) glow   : f32,
+  @location(6) alphaMode : f32, // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+  @location(7) alphaCutoff : f32,
+  // The GLB's own material factors, so the albedo and glow match the asset.
+  @location(8) emissiveFactor : vec3<f32>,
+  @location(9) baseFactor : vec3<f32>,
 };
 
 fn culledOut(tint: vec3<f32>) -> MOut {
@@ -35,6 +40,10 @@ fn culledOut(tint: vec3<f32>) -> MOut {
   o.tint = tint;
   o.emissiveUV = vec2<f32>(0.0);
   o.glow = 0.0;
+  o.alphaMode = 0.0;
+  o.alphaCutoff = 0.5;
+  o.emissiveFactor = vec3<f32>(0.0);
+  o.baseFactor = vec3<f32>(1.0);
   return o;
 }
 
@@ -50,6 +59,14 @@ fn vertUV(m: ModelInfo, v: u32) -> vec2<f32> {
 // Emissive UV lives in the same vertex record (words +10, +11).
 fn vertEmissiveUV(m: ModelInfo, v: u32) -> vec2<f32> {
   return poolVec4(m.mesh.x + v * 12u + 8u).zw;
+}
+// Alpha mode ordinal (word +3 w) and cutoff (word +7 w), baked per vertex from
+// the primitive's glTF material so a BLEND mesh (the phoenix) keeps its gaps.
+fn vertAlphaMode(m: ModelInfo, v: u32) -> f32 {
+  return poolVec4(m.mesh.x + v * 12u).w;
+}
+fn vertAlphaCutoff(m: ModelInfo, v: u32) -> f32 {
+  return poolVec4(m.mesh.x + v * 12u + 4u).w;
 }
 // Skin block starts right after the vertex block: vertexCount * 12 words.
 fn vertJoints(m: ModelInfo, v: u32) -> vec4<f32> {
@@ -134,6 +151,10 @@ fn modelVS(m: ModelInfo, vi: u32, inst: u32, center: vec3<f32>, vel: vec3<f32>,
   o.tint = tint;
   o.emissiveUV = vertEmissiveUV(m, idx);
   o.glow = glow;
+  o.alphaMode = vertAlphaMode(m, idx);
+  o.alphaCutoff = vertAlphaCutoff(m, idx);
+  o.emissiveFactor = m.mat.xyz;
+  o.baseFactor = vec3<f32>(m.mat.w, m.mat.w, m.mat.w);
   return o;
 }
 
@@ -177,22 +198,36 @@ fn vsObstacle(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
   o.tint = OBSTACLE_TINT;
   o.emissiveUV = vertEmissiveUV(m, idx);
   o.glow = m.extra.y;
+  o.alphaMode = vertAlphaMode(m, idx);
+  o.alphaCutoff = vertAlphaCutoff(m, idx);
+  o.emissiveFactor = m.mat.xyz;
+  o.baseFactor = vec3<f32>(m.mat.w, m.mat.w, m.mat.w);
   return o;
 }
 
 @fragment
 fn fsModel(i: MOut) -> @location(0) vec4<f32> {
   let tex = textureSample(atlasTex, atlasSmp, i.uv);
-  // The texture carries the real colour; the tint keeps the three model types
-  // readable as boid / predator / obstacle even under the dim night lighting.
-  let base = mix(i.tint, tex.rgb * 1.25, 0.85);
+
+  // Alpha cut-out. The phoenix declares alphaMode BLEND and stores the gaps
+  // between its feathers in the base-colour alpha, so a fragment whose alpha
+  // falls below the cutoff must be discarded — otherwise those transparent
+  // pixels get filled with lit colour and the feathers read as webbed.
+  // MASK uses the material's own alphaCutoff; BLEND uses the same threshold
+  // (a real blend would need sorted overdraw and a pipeline blend state).
+  if (i.alphaMode > 0.5) {
+    if (tex.a < i.alphaCutoff) { discard; }
+  }
+
+  // The GLB's base-colour factor tints the sampled texture; the small type tint
+  // only nudges the three model kinds apart for readability.
+  let albedo = tex.rgb * i.baseFactor;
+  let base = mix(i.tint, albedo, 0.92);
   var c = shade(normalize(i.normal), base, i.world);
-  // Emissive map (predator glow): added on top of the lit colour so glowing
-  // parts stay bright regardless of the night lighting. Black = no glow.
+  // Emissive ("glow") is lighting-independent per glTF, multiplied by the
+  // material's emissiveFactor. The "Model glow strength" slider scales it so the
+  // glow can still be dialled down at night.
   let glow = textureSample(emissiveTex, emissiveSmp, i.emissiveUV).rgb;
-  c = vec4<f32>(c.rgb + glow * i.glow, 1.0);
-  // Use the texture's alpha only as a subtle edge darkening (no cut-out, so
-  // thin parts of a mesh never disappear at distance).
-  c = vec4<f32>(c.rgb * mix(0.85, 1.0, tex.a), 1.0);
+  c = vec4<f32>(c.rgb + glow * i.emissiveFactor * i.glow, 1.0);
   return c;
 }

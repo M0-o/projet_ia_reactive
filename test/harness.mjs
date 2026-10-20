@@ -471,6 +471,29 @@ await test("obstacle GLB bakes a static mesh", async () => {
   assert(!m.hasSkin, "obstacle should be static");
 });
 
+// The phoenix declares alphaMode BLEND and stores the gaps between its feathers
+// in the base-colour alpha. That mode must reach the vertex pool (so the shader
+// can cut out), and the GLB's material factors must be carried through so the
+// glow and albedo match the asset instead of a hard-coded tint.
+await test("predator BLEND alpha mode is carried into the vertex pool", async () => {
+  const m = bakeModel(await modelBuf("predator"));
+  let blend = 0;
+  for (let v = 0; v < m.vertexCount; v++) {
+    if (m.pool[v * 12 + 3] === 2) blend++; // 2 = BLEND ordinal
+    assert(m.pool[v * 12 + 7] > 0, `vertex ${v} lost its alpha cutoff`);
+  }
+  assert(blend === m.vertexCount,
+    `expected every predator vertex to be BLEND, got ${blend}/${m.vertexCount}`);
+  const ef = m.emissiveFactor;
+  assert(ef && ef[0] === 1 && ef[1] === 1 && ef[2] === 1,
+    `predator emissiveFactor should be (1,1,1), got ${ef}`);
+  // Opaque models must NOT cut out, or the boid/obstacle would get holes.
+  const boid = bakeModel(await modelBuf("boid"));
+  for (let v = 0; v < boid.vertexCount; v++) {
+    assert(boid.pool[v * 12 + 3] === 0, `boid vertex ${v} should be OPAQUE`);
+  }
+});
+
 await test("baked joint frames actually differ across the clip", async () => {
   const m = bakeModel(await modelBuf("boid"));
   const jc = m.info.jointCount;

@@ -11,7 +11,7 @@
 
 import { parseGLB, readAccessor, nodeLocalMatrix, mat4Mul, mat4Identity,
          sampleAnimation, readImageBytes, materialBaseColorTexture,
-         materialEmissive } from "../io/gltf.js";
+         materialEmissive, materialAlpha, materialBaseColorFactor } from "../io/gltf.js";
 
 const DEFAULT_FRAMES = 48; // baked samples per animation clip
 
@@ -88,6 +88,8 @@ export function bakeModel(buffer, { frameCount = DEFAULT_FRAMES, scale = 1, keyP
       const srcIdx = materialBaseColorTexture(json, prim.material);
       const emissive = materialEmissive(json, prim.material);
       const emIdx = emissive && emissive.textureSource != null ? emissive.textureSource : null;
+      const alpha = materialAlpha(json, prim.material);
+      const baseFactor = materialBaseColorFactor(json, prim.material);
       primitives.push({
         vertexStart: vertexBase,
         vertexCount: count,
@@ -99,6 +101,11 @@ export function bakeModel(buffer, { frameCount = DEFAULT_FRAMES, scale = 1, keyP
         emissiveKey: emIdx == null ? null : `${keyPrefix}:em:${mn.meshIndex}:${emIdx}`,
         emissiveSource: emIdx,
         emissiveFactor: emissive ? emissive.factor : null,
+        // Alpha handling, carried per-vertex into the pool (see packAlpha).
+        alphaMode: alpha.mode,
+        alphaCutoff: alpha.cutoff,
+        doubleSided: alpha.doubleSided,
+        baseColorFactor: baseFactor,
       });
       if (prim.indices != null) {
         const idx = readAccessor(json, bin, prim.indices);
@@ -176,6 +183,19 @@ export function bakeModel(buffer, { frameCount = DEFAULT_FRAMES, scale = 1, keyP
   const pool = new Float32Array(totalWords);
   const u32 = new Uint32Array(pool.buffer);
   let w = 0;
+  // Per-vertex alpha mode ordinal (0=OPAQUE, 1=MASK, 2=BLEND). The fragment
+  // shader uses it to decide whether to cut out on the base-colour alpha, which
+  // is where the phoenix's feather gaps live.
+  const ALPHA_ORD = { OPAQUE: 0, MASK: 1, BLEND: 2 };
+  const alphaModeOfVertex = new Float32Array(vertexCount);
+  const alphaCutoffOfVertex = new Float32Array(vertexCount);
+  for (const prim of primitives) {
+    const ord = ALPHA_ORD[prim.alphaMode] ?? 0;
+    for (let v = prim.vertexStart; v < prim.vertexStart + prim.vertexCount; v++) {
+      alphaModeOfVertex[v] = ord;
+      alphaCutoffOfVertex[v] = prim.alphaCutoff;
+    }
+  }
   // Normalise to unit radius so a drawn mesh matches its hitbox.
   // - Static meshes have no skin transform, so their positions are scaled here.
   // - Skinned meshes must NOT have their positions pre-scaled (that would scale
@@ -186,9 +206,9 @@ export function bakeModel(buffer, { frameCount = DEFAULT_FRAMES, scale = 1, keyP
     pool[w++] = positions[i * 3] * vertScale;
     pool[w++] = positions[i * 3 + 1] * vertScale;
     pool[w++] = positions[i * 3 + 2] * vertScale;
-    pool[w++] = 0;
+    pool[w++] = alphaModeOfVertex[i];         // +3: alpha mode ordinal
     pool[w++] = normals[i * 3]; pool[w++] = normals[i * 3 + 1];
-    pool[w++] = normals[i * 3 + 2]; pool[w++] = 0;
+    pool[w++] = normals[i * 3 + 2]; pool[w++] = alphaCutoffOfVertex[i]; // +7: cutoff
     pool[w++] = uvs[i * 2]; pool[w++] = uvs[i * 2 + 1]; pool[w++] = 0; pool[w++] = 0;
   }
   for (let i = 0; hasSkin && i < vertexCount; i++) {
@@ -212,9 +232,23 @@ export function bakeModel(buffer, { frameCount = DEFAULT_FRAMES, scale = 1, keyP
     // Per-primitive material info, plus the raw GLB bytes (needed to pull the
     // embedded PNGs out for the texture atlas — see collectModelImages).
     primitives,
+    // Representative material factors for the uniform (the shaders use one
+    // ModelInfo per model; a multi-primitive model takes its first material's
+    // factor, which is what the phoenix's two skin variants both declare).
+    emissiveFactor: firstFactor(primitives, "emissiveFactor", [0, 0, 0]),
+    baseColorFactor: firstFactor(primitives, "baseColorFactor", [1, 1, 1]),
     glb: buffer,
     uvs,
   };
+}
+
+// First non-null value of `key` across a model's primitives, else `fallback`.
+function firstFactor(primitives, key, fallback) {
+  for (const p of primitives) {
+    const v = p[key];
+    if (v) return [v[0] ?? fallback[0], v[1] ?? fallback[1], v[2] ?? fallback[2]];
+  }
+  return fallback.slice();
 }
 
 // The distinct images a baked model needs, as atlas inputs. `channel` selects

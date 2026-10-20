@@ -15,10 +15,14 @@ struct Camera {
 //   mesh  = (vertexOffset, vertexCount, indexOffset, jointOffset)
 //   info  = (sizeMultiplier, animLength, jointCount, frameCount)
 //   extra = (yawOffset, glowStrength, 0, 0)
+//   mat   = (emissiveFactor.rgb, baseColorFactor.r) — the GLB's own material
+//           factors, so the lit colour and the glow match the asset instead of
+//           a hard-coded tint. mat.w is reserved.
 struct ModelInfo {
   mesh  : vec4<u32>,
   info  : vec4<f32>,
   extra : vec4<f32>,
+  mat   : vec4<f32>,
 };
 
 struct ModelSet {
