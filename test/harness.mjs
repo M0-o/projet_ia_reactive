@@ -299,24 +299,33 @@ await test("health decays without food", async () => {
   }
 });
 
-await test("eating food restores health and consumes the cluster", async () => {
-  const params = { ...params0, boidCount: 1, predatorCount: 0, foodCount: 1, obstacleCount: 0,
-    healthDecayPerSec: 5, foodRespawnDelay: 1000, maxSpeed: 0, maxForce: 0,
+await test("eating food lifts the whole flock's health and consumes the cluster", async () => {
+  const params = { ...params0, boidCount: 3, predatorCount: 0, foodCount: 1, obstacleCount: 0,
+    healthDecayPerSec: 0, foodHeal: 5, foodRespawnDelay: 1000, maxSpeed: 0, maxForce: 0,
     alignWeight: 0, cohesionWeight: 0, separationWeight: 0, boundariesWeight: 0,
     avoidWeight: 0, seekFoodWeight: 0, fleePredatorWeight: 0, wanderWeight: 0 };
   const world = createWorld({ device, shaderParts: parts, params });
   world.setParams(params);
   world.reset(9);
   await nextFrame();
+  // Boid 0 sits on the cluster; boids 1 and 2 are far away and healthy.
   await writeAgent(world.buffers.boids, 0, { pos: [0, 0, 0], health: 12, vel: [0, 0, 0] });
+  await writeAgent(world.buffers.boids, 1, { pos: [200, 0, 0], health: 40, vel: [0, 0, 0] });
+  await writeAgent(world.buffers.boids, 2, { pos: [0, 200, 0], health: 70, vel: [0, 0, 0] });
   await writePoint(world.buffers.food, 0, { pos: [0, 0, 0], radius: 3, active: true });
+  const before = await world.readAgents();
   world.step(1 / 60, 0, 1);
   await nextFrame();
   const agents = await world.readAgents();
   const food = new Float32Array((await world.readBuffer(world.buffers.food, CAPACITY.food * 32)).buffer);
-  const a = agentAt(agents, 0);
   assert(food[0 * 8 + 4] < 0.5, "food cluster was not consumed");
-  assert(a.health > 90, `health not restored: ${a.health}`);
+  // The average rises by foodHeal (5) for the whole population, not just the eater.
+  const avg = (a) => (agentAt(a, 0).health + agentAt(a, 1).health + agentAt(a, 2).health) / 3;
+  const rise = avg(agents) - avg(before);
+  assert(Math.abs(rise - 5) < 0.5, `population average rose by ${rise.toFixed(2)}, expected ~5`);
+  // Boid 0 ate, so it dropped nothing; boids 1 and 2 also gained the 5.
+  assert(Math.abs(agentAt(agents, 1).health - 45) < 0.5, `far boid should also heal: ${agentAt(agents, 1).health}`);
+  assert(Math.abs(agentAt(agents, 2).health - 75) < 0.5, `far boid should also heal: ${agentAt(agents, 2).health}`);
 });
 
 // Regression guard for the food respawn timer: eaten clusters must count down
@@ -430,12 +439,21 @@ await test("baked joint frames actually differ across the clip", async () => {
   const jc = m.info.jointCount;
   const frameWords = jc * 16;
   let maxDelta = 0;
+  let scale = 0;
   for (let j = 0; j < jc; j++) {
-    const a = m.pool[m.words - m.info.frameCount * frameWords + j * 16 + 12];
-    const b = m.pool[m.words - frameWords + j * 16 + 12];
-    maxDelta = Math.max(maxDelta, Math.abs(a - b));
+    const first = m.words - m.info.frameCount * frameWords + j * 16;
+    const last = m.words - frameWords + j * 16;
+    // Compare every matrix element: the clip may animate rotation and leave the
+    // translation column nearly constant.
+    for (let k = 0; k < 16; k++) {
+      maxDelta = Math.max(maxDelta, Math.abs(m.pool[first + k] - m.pool[last + k]));
+      scale = Math.max(scale, Math.abs(m.pool[first + k]));
+    }
   }
-  assert(maxDelta > 1e-4, `animation appears static (max joint delta ${maxDelta})`);
+  // Joint matrices are normalised to unit-radius space, so compare the delta
+  // against the matrix magnitude rather than an absolute threshold.
+  assert(maxDelta > 1e-4 * Math.max(scale, 1e-6),
+    `animation appears static (max joint delta ${maxDelta}, scale ${scale})`);
 });
 
 await test("every GLB references at least one base-colour image", async () => {
@@ -672,7 +690,9 @@ await test("Boid3D respects the world box and refills health on food", () => {
   const world = baseWorld();
   world.boids = [b];
   for (let i = 0; i < 600; i++) {
-    if (i === 300) world.food = [new AL.Food3D(b.pos.copy(), 3)];
+    // Food is respawned in front of the boid every few frames: with the +5%
+    // heal (not a full refill) the boid must keep eating to stay alive.
+    if (i % 5 === 0) world.food = [new AL.Food3D(b.pos.copy(), 3)];
     b.tick(1 / 60, world);
   }
   const minB = b.boundsMin;
@@ -680,7 +700,7 @@ await test("Boid3D respects the world box and refills health on food", () => {
   assert(b.pos.x >= minB.x && b.pos.x <= maxB.x, "x out of bounds");
   assert(b.pos.y >= minB.y && b.pos.y <= maxB.y, "y out of bounds");
   assert(b.pos.z >= minB.z && b.pos.z <= maxB.z, "z out of bounds");
-  assert(b.alive, "boid should survive (ate food at frame 300)");
+  assert(b.alive, "boid should survive while food is available");
   assert(b.health <= 100, "health must be capped at 100");
 });
 

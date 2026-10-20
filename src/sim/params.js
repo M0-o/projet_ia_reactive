@@ -33,7 +33,7 @@ export const DEFAULTS = {
 
   // health & damage
   healthDecayPerSec: 1.6,
-  foodHeal: 100,
+  foodHeal: 5,
   predatorDamage: 22,
   hitsToKill: 4,
 
@@ -65,8 +65,8 @@ export const DEFAULTS = {
   avoidWidth: 80,
 
   // model appearance (multipliers on the baked GLB base scale)
-  boidModelScale: 1.0,
-  predatorModelScale: 1.0,
+  boidModelScale: 2.2,
+  predatorModelScale: 6.0,
   // model orientation correction: rotates the mesh about its own up axis so a
   // model whose authored forward is not +Z flies nose-first.
   boidModelYaw: 0,
@@ -110,7 +110,7 @@ export const SCHEMA = [
   ["Weights", "wanderWeight", "Wander", 0, 3, 0.01],
 
   ["Health", "healthDecayPerSec", "Health decay /s", 0, 30, 0.1],
-  ["Health", "foodHeal", "Food heal", 10, 100, 1],
+  ["Health", "foodHeal", "Feed heals flock (%)", 1, 100, 1],
   ["Health", "predatorDamage", "Predator damage / hit", 1, 100, 1],
   ["Health", "hitsToKill", "Hits to kill", 1, 20, 1],
   ["Health", "boidRespawnDelay", "Respawn delay (s)", 0, 20, 0.1],

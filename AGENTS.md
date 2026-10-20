@@ -33,10 +33,10 @@ Shader sources (`shaders/`), concatenated at load time by `src/sim/compose.js`
 - `render_bindings.wgsl` — `Camera` + `ModelInfo` structs + render bind group.
 - `render_common.wgsl` — night-sky gradient + star field, `shade()`, `rayDir()`,
   `orthoBasis()`, `cullClip()`.
-- `sim.wgsl` — **10 compute entry points**: `gridClear`, `gridCount`,
+- `sim.wgsl` — **11 compute entry points**: `gridClear`, `gridCount`,
   `gridScanLocal`, `gridScanPartial`, `gridScanAdd`, `gridCursorInit`,
-  `gridScatter`, `boidsUpdate`, `predatorsUpdate`, `foodUpdate`. (The smoke
-  kernels were removed.)
+  `gridScatter`, `boidsUpdate`, `predatorsUpdate`, `foodUpdate`,
+  `flockHealUpdate`. (The smoke kernels were removed.)
 - `render/*.wgsl` — `sky` (full-screen night sky), `models` (instanced skinned
   GLB rendering + texture atlas sampling), `food`, `box`, `debug_lines`,
   `hashcells`.
@@ -147,6 +147,18 @@ on `globalThis.AL`:
 - Obstacles are generated at **varied sizes** (each 0.4×–1.8× the "Obstacle
   radius" slider, stored per-instance in `Point.posR.w`). The obstacles get their
   own hitbox ring in the `hitbox` debug overlay.
+- Food clusters are scattered across the whole world with a **central dead-zone**
+  (18% of the smallest world dimension) so they never all pile up in the middle.
+  Reaching a cluster is a **flock-wide** effect: it lifts the health of *every*
+  living boid by the "Feed heals flock (%)" value (default **5%**, clamped at
+  100), so the population average rises by that much. `boidsUpdate` only counts
+  feed events into `grid[O_SPARE]`; the `flockHealUpdate` kernel then applies the
+  boost to all boids and `gridClear` resets the counter next frame.
+- The skinned vertex path scales the **joint matrices** (left-multiplied by the
+  unit-radius scale) rather than the input positions. Pre-scaling positions only
+  scales the linear part of `joint * p` and leaves the joint translation at raw
+  scale, which tears skinned meshes (predator/boid) into shreds; static meshes
+  have no skin transform and are scaled from their stored positions.
 
 ## Known limits (verify before relying on them)
 - In this container there is **no GPU adapter**, so WebGPU cannot be visually

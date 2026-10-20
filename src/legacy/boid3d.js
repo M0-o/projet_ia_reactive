@@ -51,6 +51,7 @@
       this.avoidWidth = 22;
       this.healthDecayPerSec = 1.6;
       this.eatRadius = 7;
+      this.foodHeal = 5;
 
       // wander (spherical)
       this.distanceCercle = 40;
@@ -251,7 +252,13 @@
 
       for (const f of food) {
         if (f.active && this.pos.dist(f.pos) < this.eatRadius + f.r) {
-          this.health = 100;
+          // Matches the compute shader: reaching a cluster lifts the *whole*
+          // population's health by foodHeal percent (capped at 100), not just
+          // the boid that ate.
+          const flock = (world && world.boids) || [this];
+          for (const b of flock) {
+            if (b.alive !== false) b.health = Math.min(b.health + this.foodHeal, 100);
+          }
           f.active = false;
           break;
         }

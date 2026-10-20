@@ -33,6 +33,9 @@ fn gridClear(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= numCells()) { return; }
   atomicStore(&grid[O_COUNTS + i], 0u);
+  // Slot 0 also resets the previous frame's flock-wide feed-event counter,
+  // which `flockHealUpdate` drains at the end of the frame.
+  if (i == 0u) { atomicStore(&grid[O_SPARE], 0u); }
 }
 
 @compute @workgroup_size(64)
@@ -357,7 +360,10 @@ fn boidsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
       var fd = food[fi];
       if (fd.extra.x < 0.5) { continue; }
       if (distance(npos, fd.posR.xyz) < P.eating.x + fd.posR.w) {
-        health = P.health.y;
+        // Record a flock-wide feed event. The individual boid's own health is
+        // left alone here; the population average is topped up by the
+        // `flockHealUpdate` kernel later this frame.
+        atomicAdd(&grid[O_SPARE], 1u);
         fd.extra.x = 0.0;
         fd.extra.y = P.eating.y;
         food[fi] = fd;
@@ -481,5 +487,26 @@ fn foodUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     food[i] = f;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Flock-wide feeding: every time any boid reaches a food cluster, the *average*
+// health of the whole population rises by the "Food heal (%)" value. Feed
+// events are counted by `boidsUpdate` into grid[O_SPARE]; here each alive boid
+// gets that many percentage points added to its own health (clamped at 100),
+// which lifts the population average by the same amount.
+// Runs after boidsUpdate and before the next frame's gridClear.
+// ---------------------------------------------------------------------------
+
+@compute @workgroup_size(64)
+fn flockHealUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= P.counts.x) { return; }
+  let events = f32(atomicLoad(&grid[O_SPARE]));
+  if (events <= 0.0) { return; }
+  var b = boids[i];
+  if (b.info.x < 0.5) { return; } // only living boids benefit
+  b.posH.w = min(b.posH.w + P.health.y * events, 100.0);
+  boids[i] = b;
 }
 

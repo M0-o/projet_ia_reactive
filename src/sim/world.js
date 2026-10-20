@@ -12,6 +12,7 @@ import { composeCompute } from "./compose.js";
 const COMPUTE_ENTRIES = [
   "gridClear", "gridCount", "gridScanLocal", "gridScanPartial", "gridScanAdd",
   "gridCursorInit", "gridScatter", "boidsUpdate", "predatorsUpdate", "foodUpdate",
+  "flockHealUpdate",
 ];
 
 function mulberry32(a) {
@@ -96,16 +97,23 @@ export function createWorld({ device, shaderParts, params, seed = 1337 }) {
     const [sx, sy, sz] = [state.worldX, state.worldY, state.worldZ];
     const centers = [];
     const count = Math.min(state.foodCount, CAPACITY.food);
+    // Keep clusters out of a central dead-zone so they do not all pile up in
+    // the middle of the world; they scatter across the whole volume instead.
+    const minFromCentre = Math.min(sx, sy, sz) * 0.18;
     for (let k = 0; k < CAPACITY.food; k++) {
       const o = k * 8;
       if (k < count) {
         let cx = 0, cy = 0, cz = 0, tries = 0;
         do {
-          cx = (rng() - 0.5) * sx * 0.8;
-          cy = (rng() - 0.5) * sy * 0.8;
-          cz = (rng() - 0.5) * sz * 0.8;
+          cx = (rng() - 0.5) * sx * 0.92;
+          cy = (rng() - 0.5) * sy * 0.92;
+          cz = (rng() - 0.5) * sz * 0.92;
           tries++;
-        } while (tries < 24 && centers.some((c) => Math.hypot(c[0] - cx, c[1] - cy, c[2] - cz) < state.eatRadius * 3));
+          const tooClose =
+            Math.hypot(cx, cy, cz) < minFromCentre ||
+            centers.some((c) => Math.hypot(c[0] - cx, c[1] - cy, c[2] - cz) < state.eatRadius * 3);
+          if (!tooClose) break;
+        } while (tries < 48);
         centers.push([cx, cy, cz]);
         data[o + 0] = cx; data[o + 1] = cy; data[o + 2] = cz;
         data[o + 3] = state.foodRadius;
@@ -197,6 +205,7 @@ export function createWorld({ device, shaderParts, params, seed = 1337 }) {
     run("boidsUpdate", nB);
     run("predatorsUpdate", nP);
     run("foodUpdate", nF);
+    run("flockHealUpdate", nB);
 
     pass.end();
     device.queue.submit([enc.finish()]);
