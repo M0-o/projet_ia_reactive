@@ -32,9 +32,12 @@ export const DEFAULTS = {
   wanderWeight: 0.35,
 
   // health & damage
-  healthDecayPerSec: 1.6,
+  // Decay is per-boid (each boid has its own 0.5x..1.5x vitality, and its own
+  // hit tolerance), so starvation + predation cull the flock a fraction at a
+  // time instead of wiping it in one synchronized instant.
+  healthDecayPerSec: 16,
   foodHeal: 5,
-  predatorDamage: 22,
+  predatorDamage: 40,
   hitsToKill: 4,
 
   // feeding

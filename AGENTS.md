@@ -14,7 +14,7 @@ harness.
   in a WebGPU-capable browser (recent Chrome/Edge). WebGPU needs a secure
   context; `localhost` counts as secure.
 - `npm test` → runs `test/harness.mjs` headlessly against Dawn (`webgpu` npm
-  bindings). Currently **36 tests pass**.
+  bindings). Currently **37 tests pass**.
 - There is **no** build/lint step.
 
 ## Layout
@@ -154,6 +154,16 @@ on `globalThis.AL`:
   100), so the population average rises by that much. `boidsUpdate` only counts
   feed events into `grid[O_SPARE]`; the `flockHealUpdate` kernel then applies the
   boost to all boids and `gridClear` resets the counter next frame.
+- **Population dynamics (deaths are spread out, not synchronised).** Every boid
+  gets a stable per-slot *vitality* (0.5×–1.5× `healthDecayPerSec`) and
+  *resilience* (0.6×–2.4× `hitsToKill`), derived from `hash1(slot)`, and spawns /
+  respawns with **randomised health** (35–100). Without that variance every boid
+  crossed zero on the same frame and the whole flock wiped and respawned in
+  lock-step; with it, starvation and predation cull the flock a *fraction* at a
+  time. The food/decay feedback then settles the living count in a band (about
+  65–100% with the defaults) that the "Health decay /s", "Predator damage / hit"
+  and "Feed heals flock (%)" sliders move up or down. The regression test
+  `boid deaths spread out instead of wiping the flock at once` pins this.
 - The skinned vertex path scales the **joint matrices** (left-multiplied by the
   unit-radius scale) rather than the input positions. Pre-scaling positions only
   scales the linear part of `joint * p` and leaves the joint translation at raw

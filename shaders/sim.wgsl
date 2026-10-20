@@ -371,9 +371,17 @@ fn boidsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
       }
     }
   }
-  health = health - P.health.x * dt;
+  // Per-agent vitality: a stable hash of the slot index gives every boid its own
+  // metabolic rate (0.5x..1.5x the slider) and its own tolerance to hits. Without
+  // this every boid starves (or dies of predation) on the same frame and the whole
+  // flock wipes and respawns in lock-step; the variance turns death into a
+  // spread-out stochastic process, so the living population settles at a fraction
+  // of the total that drifts naturally over time.
+  let vitality = 0.5 + hash1(i * 2246822519u + 5u);
+  let resilience = 0.6 + 1.8 * hash1(i * 2654435761u + 11u);
+  health = health - P.health.x * vitality * dt;
 
-  if (health <= 0.0 || hits >= P.health.w) {
+  if (health <= 0.0 || hits >= P.health.w * resilience) {
     boids[i] = makeDeadAgent(b.info.w);
     return;
   }

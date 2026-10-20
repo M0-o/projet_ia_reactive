@@ -78,7 +78,9 @@ export function createWorld({ device, shaderParts, params, seed = 1337 }) {
       data[o + 0] = (rng() - 0.5) * sx * 0.92;
       data[o + 1] = (rng() - 0.5) * sy * 0.92;
       data[o + 2] = (rng() - 0.5) * sz * 0.92;
-      data[o + 3] = 100;
+      // Spread initial health over [35, 100] so the flock does not all hit zero
+      // (and respawn) at the same instant; the population count then drifts.
+      data[o + 3] = (0.35 + 0.65 * rng()) * 100;
       const d = randomDir(rng);
       data[o + 4] = d[0] * speed;
       data[o + 5] = d[1] * speed;

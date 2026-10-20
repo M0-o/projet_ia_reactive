@@ -11,6 +11,16 @@
     throw new Error("Boid3D requires boids.js to be loaded first");
   }
 
+  // Maps an integer to [0,1) with a cheap deterministic mix, mirroring the
+  // per-slot hash the compute shader uses for vitality / resilience.
+  function hashUnit(x) {
+    let h = x | 0;
+    h = Math.imul(h ^ (h >>> 16), 2246822519) | 0;
+    h = Math.imul(h ^ (h >>> 13), 3266489917) | 0;
+    h = (h ^ (h >>> 16)) >>> 0;
+    return h / 4294967296;
+  }
+
   function basisFrom(fwd) {
     const f = fwd.copy().setMag(1);
     const up = Math.abs(f.y) > 0.9 ? createVector(1, 0, 0) : createVector(0, 1, 0);
@@ -52,6 +62,12 @@
       this.healthDecayPerSec = 1.6;
       this.eatRadius = 7;
       this.foodHeal = 5;
+      // Per-boid vitality / resilience (mirrors the shader's per-slot hash):
+      // each agent metabolises and tolerates hits at its own rate so deaths are
+      // spread out instead of the whole flock dying on the same frame.
+      const slot = Boid3D._spawned++;
+      this.vitality = 0.5 + hashUnit(slot * 2246822519 + 5);
+      this.resilience = 0.6 + 1.8 * hashUnit(slot * 2654435761 + 11);
 
       // wander (spherical)
       this.distanceCercle = 40;
@@ -263,9 +279,10 @@
           break;
         }
       }
-      this.health -= this.healthDecayPerSec * dt;
+      this.health -= this.healthDecayPerSec * this.vitality * dt;
       this.age += dt;
-      if (this.health <= 0 || this.hits >= (world && world.hitsToKill ? world.hitsToKill : 4)) {
+      const tolerance = (world && world.hitsToKill ? world.hitsToKill : 4) * this.resilience;
+      if (this.health <= 0 || this.hits >= tolerance) {
         this.alive = false;
       }
     }
@@ -278,6 +295,10 @@
       return out;
     }
   }
+
+  // Monotonic spawn counter so each boid gets a distinct vitality/resilience
+  // (the GPU derives the same variance from the boid's fixed slot index).
+  Boid3D._spawned = 0;
 
   globalThis.AL.Boid = Boid; // expose the untouched 2D base for inspection
   globalThis.AL.Boid3D = Boid3D;

@@ -7,6 +7,8 @@
 //   * every WGSL module compiles (compute + all render modules)
 //   * the spatial-hash counting sort produces a correct prefix sum + buckets
 //   * boids stay inside the box, lose health over time, and refill it on food
+//   * reaching food lifts the whole flock's health, not just the eater
+//   * deaths spread out (per-boid vitality) instead of wiping the flock at once
 //   * predators accumulate hits on a boid and eventually kill it
 //   * GLB models parse, bake their animations, and render visibly
 
@@ -297,6 +299,41 @@ await test("health decays without food", async () => {
     if (!a.alive) continue;
     assert(a.health < agentAt(before, i).health, `boid ${i} health did not decay`);
   }
+});
+
+// The population must thin out a *fraction* at a time rather than everyone dying
+// and returning together. With per-boid vitality (decay) and resilience (hits)
+// the deaths are spread out, so while a long starvation run is in progress some
+// boids are already dead and others are still alive.
+await test("boid deaths spread out instead of wiping the flock at once", async () => {
+  const params = { ...params0, boidCount: 400, predatorCount: 0, foodCount: 0, obstacleCount: 0,
+    healthDecayPerSec: 9, boidRespawnDelay: 1000, gridCellSize: 150 };
+  const world = createWorld({ device, shaderParts: parts, params });
+  world.setParams(params);
+  world.reset(21);
+  await nextFrame();
+
+  let sawPartial = 0; // frames where the flock is a mix of alive + dead
+  let sawAliveFrac = 0; // frames where at least one boid is alive
+  const aliveCounts = [];
+  for (let f = 0; f < 480; f++) {
+    world.step(1 / 60, f / 60, f);
+    if (f % 20 !== 0) continue;
+    await nextFrame();
+    const a = await world.readAgents();
+    let alive = 0;
+    for (let i = 0; i < params.boidCount; i++) if (agentAt(a, i).alive) alive++;
+    aliveCounts.push(alive);
+    if (alive > 0) sawAliveFrac++;
+    if (alive > 0 && alive < params.boidCount * 0.98) sawPartial++;
+  }
+  // At some point the flock must be genuinely partial (some dead, some alive),
+  // not a clean 100% -> 0% wipe.
+  assert(sawPartial >= 2, `flock never thinned partially (partial frames: ${sawPartial}, samples: ${aliveCounts.join(",")})`);
+  // And not every boid may die on the very first sample together: the alive
+  // count must take at least two distinct values across the run.
+  const distinct = new Set(aliveCounts);
+  assert(distinct.size >= 2, `population never varied (counts: ${[...distinct].join(",")})`);
 });
 
 await test("eating food lifts the whole flock's health and consumes the cluster", async () => {
