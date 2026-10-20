@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Artificial Life — 3D Boids (WebGPU)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!--
+    Legacy JS 3D reference classes (classic scripts, loaded in dependency
+    order). These mirror the GPU data layout and act as a reference oracle;
+    the simulation itself runs entirely in WGSL compute shaders via main.js.
+    p5shim.js stands in for p5's global-mode vector helpers so the untouched
+    boids.js loads without the full p5 library.
+  -->
+  <script src="src/legacy/p5shim.js"></script>
+  <script src="boids.js"></script>
+  <script src="src/legacy/boid3d.js"></script>
+  <script src="src/legacy/vehicle3d.js"></script>
+  <script src="src/legacy/predator3d.js"></script>
+  <script src="src/legacy/food3d.js"></script>
+  <script src="src/legacy/obstacle3d.js"></script>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="stats" class="overlay"></div>
+  <div id="error" class="overlay error hidden"></div>
+  <aside id="panel" class="panel"></aside>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

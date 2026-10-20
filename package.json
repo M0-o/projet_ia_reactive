@@ -1,0 +1,14 @@
+{
+  "name": "artificial-life-boids-3d",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "3D artificial-life simulation (boids, food, predators, obstacles) with WebGPU compute shaders. Test-only tooling; the app itself is plain static ES modules with no build step.",
+  "scripts": {
+    "serve": "node serve.mjs",
+    "test": "node test/harness.mjs"
+  },
+  "devDependencies": {
+    "webgpu": "^0.6.2"
+  }
+}
