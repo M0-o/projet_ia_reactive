@@ -409,6 +409,38 @@ await test("predator hits kill a boid after hitsToKill contacts", async () => {
   assert(!a.alive || a.hits >= params.hitsToKill, `boid should be dead by hits; hits=${a.hits} alive=${a.alive}`);
 });
 
+// A respawned predator used to be created with a zero velocity. The renderer
+// derives the model's facing from `velD.xyz`, so a zero velocity meant the
+// phoenix was drawn at the fixed +Z fallback heading and then snapped to its
+// real heading as it accelerated — the "sporadic rotation" pop. This pins that a
+// respawn leaves the predator already moving, so its heading is well defined
+// from its very first frame.
+await test("respawned predator spawns with a well-defined heading", async () => {
+  const params = { ...params0, boidCount: 0, predatorCount: 1, foodCount: 0, obstacleCount: 0,
+    boidRespawnDelay: 0, maxSpeed: 0, maxForce: 0 };
+  const world = createWorld({ device, shaderParts: parts, params });
+  world.setParams(params);
+  world.reset(7);
+  await nextFrame();
+  // Kill predator 0; the respawn delay is zero, so the next step revives it.
+  await writeAgent(world.buffers.predators, 0, { pos: [200, 120, -80], health: 0, alive: false });
+  world.step(1 / 60, 0, 0);
+  await nextFrame();
+  const raw = await world.readBuffer(world.buffers.predators, 12 * 4);
+  const a = agentAt(new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4), 0);
+  const speed = Math.hypot(a.vel[0], a.vel[1], a.vel[2]);
+  assert(a.alive, "predator should have respawned");
+  assert(speed > 1,
+    `respawned predator has zero heading (speed ${speed.toFixed(2)}); the model ` +
+    "would pop to the +Z fallback orientation");
+  // It should head *toward* the world centre, not away from it — a degenerate
+  // outward velocity would send respawns straight into the boundary.
+  const centre = [params.worldX / 2, params.worldY / 2, params.worldZ / 2];
+  const toCentre = [centre[0] - a.pos[0], centre[1] - a.pos[1], centre[2] - a.pos[2]];
+  const dot = a.vel[0] * toCentre[0] + a.vel[1] * toCentre[1] + a.vel[2] * toCentre[2];
+  assert(dot > 0, "respawned predator should be heading back toward the world centre");
+});
+
 await test("boids avoid obstacles (never overlap an obstacle core)", async () => {
   const params = { ...params0, boidCount: 300, predatorCount: 0, foodCount: 0, obstacleCount: 1,
     healthDecayPerSec: 0, obstacleRadius: 22, boidRespawnDelay: 1000, wanderWeight: 0.6 };
@@ -739,6 +771,107 @@ fn probe() {
   }
   assert(maxJump < 0.25,
     `basis rolls discontinuously: largest step was ${maxJump.toFixed(3)} (a snap)`);
+});
+
+// The basis maps the model's local +Z onto the heading, but each asset's authored
+// forward differs. The boid's body runs along +Y (head at +Y), so it needs
+// pitch 90. The phoenix is a different rig: its head bone sits at the extreme +X
+// end and its tail chain trails to -X, so it faces +X and needs a *yaw* of -90.
+// This asserts the shipped defaults make the head lead the heading, and that the
+// previous default (yaw 0) genuinely had it flying sideways/broadside.
+await test("predator default orientation points its head along its heading", async () => {
+  const { bakeModel } = await import(join(root, "src/render/models.js"));
+  const { parseGLB, readAccessor } = await import(join(root, "src/io/gltf.js"));
+  const predicateBuf = await modelBuf("predator");
+  const model = bakeModel(predicateBuf, { keyPrefix: "predator" });
+
+  // Replicate the shader's applyModelYawPitch exactly, then read the heading
+  // (world +Z) coordinate: when the heading *is* +Z the basis is the identity,
+  // so the corrected local z is the along-heading position.
+  const along = (p, yawDeg, pitchDeg) => {
+    const yaw = yawDeg * Math.PI / 180, pitch = pitchDeg * Math.PI / 180;
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    let v = [cy * p[0] + sy * p[2], p[1], -sy * p[0] + cy * p[2]];
+    if (Math.abs(pitch) > 1e-6) {
+      const cp = Math.cos(pitch), sp = Math.sin(pitch);
+      v = [v[0], cp * v[1] - sp * v[2], sp * v[1] + cp * v[2]];
+    }
+    return v[2];
+  };
+
+  // Skinned (rest-pose) vertex positions straight out of the baked pool.
+  const { pool } = model;
+  const vo = model.mesh.vertexOffset, jo = model.mesh.jointOffset;
+  const n = model.vertexCount, so = vo + n * 12;
+  const col = (j, c) => [pool[jo + j * 16 + c * 4], pool[jo + j * 16 + c * 4 + 1],
+    pool[jo + j * 16 + c * 4 + 2], pool[jo + j * 16 + c * 4 + 3]];
+  const skin = (v) => {
+    const p = [pool[vo + v * 12], pool[vo + v * 12 + 1], pool[vo + v * 12 + 2]];
+    const ji = [pool[so + v * 8], pool[so + v * 8 + 1], pool[so + v * 8 + 2], pool[so + v * 8 + 3]];
+    const wt = [pool[so + v * 8 + 4], pool[so + v * 8 + 5], pool[so + v * 8 + 6], pool[so + v * 8 + 7]];
+    const out = [0, 0, 0];
+    for (let k = 0; k < 4; k++) {
+      const M = [col(ji[k], 0), col(ji[k], 1), col(ji[k], 2), col(ji[k], 3)];
+      for (let r = 0; r < 3; r++) {
+        out[r] += (M[0][r] * p[0] + M[1][r] * p[1] + M[2][r] * p[2] + M[3][r]) * wt[k];
+      }
+    }
+    return out;
+  };
+
+  // Anchor the assertion in the rig itself: the head bone must end up ahead of
+  // the tail bone along the heading. Reading the bones (rather than guessing
+  // from mass) is what makes this robust against mistaking the crest for a tail.
+  const gltf = parseGLB(predicateBuf);
+  const nodeWorldPos = (nameFrag) => {
+    const idx = gltf.json.nodes.findIndex((nd) => nd.name && nd.name.includes(nameFrag));
+    assert(idx >= 0, `predator rig is missing a bone named ${nameFrag}`);
+    const parent = new Array(gltf.json.nodes.length).fill(-1);
+    gltf.json.nodes.forEach((nd, i) => (nd.children ?? []).forEach((c) => { parent[c] = i; }));
+    const local = (nd) => {
+      const t = nd.translation ?? [0, 0, 0];
+      const q = nd.rotation ?? [0, 0, 0, 1];
+      const s = nd.scale ?? [1, 1, 1];
+      const [x, y, z, w] = q;
+      const m = [
+        (1 - 2 * (y * y + z * z)) * s[0], 2 * (x * y + z * w) * s[0], 2 * (x * z - y * w) * s[0], 0,
+        2 * (x * y - z * w) * s[1], (1 - 2 * (x * x + z * z)) * s[1], 2 * (y * z + x * w) * s[1], 0,
+        2 * (x * z + y * w) * s[2], 2 * (y * z - x * w) * s[2], (1 - 2 * (x * x + y * y)) * s[2], 0,
+        t[0], t[1], t[2], 1,
+      ];
+      return m;
+    };
+    const mul = (A, B) => {
+      const o = new Array(16).fill(0);
+      for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+        let acc = 0;
+        for (let k = 0; k < 4; k++) acc += A[k * 4 + r] * B[c * 4 + k];
+        o[c * 4 + r] = acc;
+      }
+      return o;
+    };
+    let m = local(gltf.json.nodes[idx]);
+    for (let p = parent[idx]; p !== -1; p = parent[p]) m = mul(local(gltf.json.nodes[p]), m);
+    return [m[12], m[13], m[14]];
+  };
+  const head = nodeWorldPos("b_Head_06");
+  const tail = nodeWorldPos("B_Tail_5_034");
+  assert(Math.hypot(head[0] - tail[0], head[1] - tail[1], head[2] - tail[2]) > 1,
+    "head and tail bones coincide — the rig anchors are wrong");
+
+  const headZ = along(head, params0.predatorModelYaw, params0.predatorModelPitch);
+  const tailZ = along(tail, params0.predatorModelYaw, params0.predatorModelPitch);
+  assert(headZ > tailZ,
+    `predator head (z=${headZ.toFixed(2)}) trails its tail (z=${tailZ.toFixed(2)}) ` +
+    `at yaw ${params0.predatorModelYaw} / pitch ${params0.predatorModelPitch}`);
+
+  // And the old default really was wrong, so this pins a regression rather than
+  // restating the basis: at yaw 0 the rig faced along the wing axis, broadside.
+  const oldHeadZ = along(head, 0, 0);
+  const oldTailZ = along(tail, 0, 0);
+  assert(Math.abs(oldHeadZ - oldTailZ) < 1,
+    "expected the previous yaw-0 default to place head and tail at a similar " +
+    `along-heading position, got ${oldHeadZ.toFixed(2)} vs ${oldTailZ.toFixed(2)}`);
 });
 
 // ---- JS 3D reference (the Boid3D subclasses) -------------------------------

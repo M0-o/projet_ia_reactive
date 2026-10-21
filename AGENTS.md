@@ -14,7 +14,7 @@ harness.
   in a WebGPU-capable browser (recent Chrome/Edge). WebGPU needs a secure
   context; `localhost` counts as secure.
 - `npm test` → runs `test/harness.mjs` headlessly against Dawn (`webgpu` npm
-  bindings). Currently **41 tests pass**.
+  bindings). Currently **43 tests pass**.
 - There is **no** build/lint step.
 
 ## Layout
@@ -162,11 +162,25 @@ on `globalThis.AL`:
   direction. The earlier version hard-switched its reference up at
   `|fwd.y| > 0.9`, which snapped the roll — a visible flip when a boid pitched
   steeply; the regression test sweeps 64 headings across that threshold and fails
-  if the basis jumps. Each asset's authored forward still may not be `+Z`: the
-  boid's body runs along `+Y` in model space, so its default
-  `boidModelPitch` is **90°**. The "… model yaw/pitch (deg)" sliders correct
-  either live (yaw spins about the model's up axis, pitch then tilts about the
-  rotated X axis).
+  if the basis jumps. Each asset's authored forward still may not be `+Z`, and
+  the correction differs per asset because their rigs do:
+  - the boid's body runs along **`+Y`** (head at `+Y`), so its default
+    `boidModelPitch` is **90°**;
+  - the phoenix is a different Sketchfab/FBX rig whose head bone (`b_Head_06`)
+    sits at the extreme **`+X`** end and whose tail chain (`B_Tail_5_034`) trails
+    to `-X`, so it faces `+X` and needs `predatorModelYaw` **-90°** with pitch
+    **0**. At the old default of yaw 0 the heading ran across its wings, so it
+    slid sideways and appeared to tumble as its velocity swung. (The rig's `+Y`
+    spike is the *crest* — `B_Hair_*` bones — not a tail, which is an easy way to
+    mis-read the facing from geometry alone.)
+  The "… model yaw/pitch (deg)" sliders correct either live (yaw spins about the
+  model's up axis, pitch then tilts about the rotated X axis).
+- **Spawns carry a real heading.** The renderer takes each model's facing from
+  `velD.xyz`, so an agent born with a zero velocity would be drawn at the fixed
+  `+Z` fallback and then *snap* to its true heading as it accelerated. Both
+  respawn paths (`boidsUpdate`, `predatorsUpdate`) therefore call `makeAgent`
+  with a `spawnVel(...)` that points toward the world centre at a fraction of the
+  agent's max speed, so a respawned predator renders coherently from frame one.
 - Textured models sample two shared atlases — base colour and emissive
   (`shaders/render/models.wgsl`, bindings 9/10 and 11/12). If either atlas fails
   to build the renderer falls back to a 1x1 texel (grey base, black emissive),

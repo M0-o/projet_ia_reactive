@@ -76,7 +76,14 @@ export const DEFAULTS = {
   // aligned to the heading without editing the asset.
   boidModelYaw: 0,
   boidModelPitch: 90,
-  predatorModelYaw: 0,
+  // The phoenix's authored forward is not +Y like the boid's: its skeleton is a
+  // Sketchfab/FBX rig whose head bone (`b_Head_06`) sits at the extreme +X end
+  // and whose tail chain (`B_Tail_5_034`) trails to -X, so the bird faces +X.
+  // A yaw of -90 rotates that +X face onto local +Z — the axis `orthoBasis` maps
+  // onto the heading — while pitch stays 0. At yaw 0 (the old default) the
+  // heading ran across its wings, so it appeared to slide sideways and to tumble
+  // as its velocity swung.
+  predatorModelYaw: -90,
   predatorModelPitch: 0,
   // multiplier on the emissive (glow) map; 0 disables it
   modelGlow: 1.0,

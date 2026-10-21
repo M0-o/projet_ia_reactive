@@ -144,6 +144,21 @@ fn spawnPos(seed: u32) -> vec3<f32> {
   return minB + r * (maxB - minB);
 }
 
+// A non-degenerate spawn velocity so a freshly (re)spawned agent renders with a
+// real heading immediately instead of the +Z fallback. It heads toward the world
+// centre — where the action is — at `speed`, nudged by the seed so a batch of
+// spawns does not all face the same way.
+fn spawnVel(pos: vec3<f32>, seed: u32, speed: f32) -> vec3<f32> {
+  let centre = P.boundsMin.xyz + 0.5 * P.boundsSize.xyz;
+  let toCentre = centre - pos;
+  let dir = select(
+    safeNormalize(toCentre, vec3<f32>(0.0, 0.0, 1.0)),
+    rand3(seed ^ 0x9e3779b9u) * 2.0 - vec3<f32>(1.0),
+    length(toCentre) < EPS,
+  );
+  return safeNormalize(dir, vec3<f32>(0.0, 0.0, 1.0)) * speed;
+}
+
 // ---------------------------------------------------------------------------
 // Boids: 3D port of boids.js (align/cohesion/separation/seek/flee/wander/
 // boundaries/avoid) plus health, feeding and death.
@@ -160,7 +175,8 @@ fn boidsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
     b.info.y = b.info.y + dt;
     if (b.info.y >= P.eating.w) {
       let seed = i * 2654435761u + u32(P.timing.z) + 17u;
-      boids[i] = makeAgent(spawnPos(seed), b.info.w);
+      let spawn = spawnPos(seed);
+      boids[i] = makeAgent(spawn, b.info.w, spawnVel(spawn, seed, P.motion.x * 0.25));
       return;
     }
     boids[i] = b;
@@ -407,7 +423,8 @@ fn predatorsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
     p.info.y = p.info.y + dt;
     if (p.info.y >= P.eating.w * 2.0) {
       let seed = i * 40503u + u32(P.timing.z) + 777u;
-      predators[i] = makeAgent(spawnPos(seed), p.info.w);
+      let spawn = spawnPos(seed);
+      predators[i] = makeAgent(spawn, p.info.w, spawnVel(spawn, seed, P.predator.x * 0.3));
       return;
     }
     predators[i] = p;

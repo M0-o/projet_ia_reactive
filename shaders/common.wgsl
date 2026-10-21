@@ -121,10 +121,15 @@ fn setMagSafe(v: vec3<f32>, m: f32) -> vec3<f32> {
   return v * (m / l);
 }
 
-fn makeAgent(pos: vec3<f32>, radius: f32) -> Agent {
+// `vel` is the spawn velocity. A zero velocity is a problem for the renderer:
+// the model's facing is taken from `velD.xyz`, so a just-spawned agent would be
+// drawn at the fixed +Z fallback heading and then snap to its real heading once
+// it accelerates — a visible orientation pop. Spawns therefore get a real
+// (if arbitrary) heading so they render coherently from their first frame.
+fn makeAgent(pos: vec3<f32>, radius: f32, vel: vec3<f32>) -> Agent {
   var a: Agent;
   a.posH = vec4<f32>(pos, 100.0);
-  a.velD = vec4<f32>(0.0);
+  a.velD = vec4<f32>(vel, 0.0);
   a.info = vec4<f32>(1.0, 0.0, 0.0, radius);
   return a;
 }
