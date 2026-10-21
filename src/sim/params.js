@@ -70,12 +70,30 @@ export const DEFAULTS = {
   // model appearance (multipliers on the baked GLB base scale)
   boidModelScale: 2.2,
   predatorModelScale: 6.0,
-  // model orientation correction: rotates the mesh about its own up axis so a
-  // model whose authored forward is not +Z flies nose-first.
+  // model orientation correction. Yaw spins the mesh about its own up axis and
+  // pitch tilts it about its (rotated) X axis, so a model whose authored forward
+  // is not +Z — e.g. the boid, whose body runs along +Y in model space — can be
+  // aligned to the heading without editing the asset.
   boidModelYaw: 0,
+  boidModelPitch: 90,
   predatorModelYaw: 0,
+  predatorModelPitch: 0,
   // multiplier on the emissive (glow) map; 0 disables it
   modelGlow: 1.0,
+
+  // bloom (HDR post-process). The scene renders into an rgba16float target, the
+  // excess above `bloomThreshold` is blurred and added back at `bloomStrength`.
+  // Enabled/disabled by the "Bloom (glow)" checkbox in the UI.
+  //
+  // The threshold is measured against the scene's actual range, not [0,1]. The
+  // night sky and most lit geometry sit near 0-0.3; only the glowing emissive
+  // parts (pushed above 1.0 by EMISSIVE_HDR) and the brightest highlights exceed
+  // that. A threshold near 0.4 therefore isolates the glow and its highlights
+  // while leaving the dark background alone — at 1.0 (or even 0.85) so few
+  // pixels qualify that the blur has nothing to spread and bloom is invisible.
+  bloomThreshold: 0.4,
+  bloomStrength: 1.0,
+  bloomRadius: 1.0,
 
   // simulation
   timeScale: 1.0,
@@ -136,8 +154,14 @@ export const SCHEMA = [
   ["Scale", "boidModelScale", "Boid model scale", 0.1, 6, 0.05],
   ["Scale", "predatorModelScale", "Predator model scale", 0.1, 6, 0.05],
   ["Scale", "boidModelYaw", "Boid model yaw (deg)", -180, 180, 5],
+  ["Scale", "boidModelPitch", "Boid model pitch (deg)", -180, 180, 5],
   ["Scale", "predatorModelYaw", "Predator model yaw (deg)", -180, 180, 5],
+  ["Scale", "predatorModelPitch", "Predator model pitch (deg)", -180, 180, 5],
   ["Scale", "modelGlow", "Model glow strength", 0, 4, 0.05],
+
+  ["Bloom", "bloomThreshold", "Bloom threshold", 0, 4, 0.05],
+  ["Bloom", "bloomStrength", "Bloom strength", 0, 4, 0.05],
+  ["Bloom", "bloomRadius", "Bloom radius", 0.25, 4, 0.05],
 
   ["Simulation", "timeScale", "Time scale", 0, 4, 0.05],
 ];

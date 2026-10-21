@@ -36,11 +36,16 @@ instead of a blank canvas.
 - **Drag** to orbit, **scroll** to zoom, **shift-drag / middle-drag** to pan.
 - The **right-hand panel** exposes every tunable parameter (generated from the
   schema in `src/sim/params.js`) plus Pause / Reset / Randomize-seed. The
-  **Scale** section adjusts each model's size and yaw if a mesh is not pointing
-  the way you want, plus the **glow strength** of the emissive (self-lit) maps.
-- **Debug overlays** are five independent toggles — heading vectors, vision
-  radius, hitboxes, bounding boxes, and **spatial-hash cells** (the occupied
-  cells of the neighbour grid). Only the ones you enable are drawn.
+  **Scale** section adjusts each model's size, yaw and pitch if a mesh is not
+  pointing the way you want, plus the **glow strength** of the emissive
+  (self-lit) maps. The **Bloom** section controls the HDR glow pass: threshold
+  (measured against the scene's real range — raise it to keep only the brightest
+  emissive highlights, lower it to let more of the scene glow), strength and
+  radius (the halo width).
+- **Debug / effect overlays** are six independent toggles — heading vectors,
+  vision radius, hitboxes, bounding boxes, **spatial-hash cells** (the occupied
+  cells of the neighbour grid), and **bloom** (the glow post-process). Only the
+  ones you enable are drawn.
 
 ## Architecture
 

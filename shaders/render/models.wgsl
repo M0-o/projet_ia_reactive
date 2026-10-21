@@ -16,6 +16,13 @@ const BOID_TINT: vec3<f32> = vec3<f32>(0.62, 0.72, 0.90);
 const PREDATOR_TINT: vec3<f32> = vec3<f32>(0.95, 0.42, 0.38);
 const OBSTACLE_TINT: vec3<f32> = vec3<f32>(0.42, 0.40, 0.38);
 
+// How far the emissive term is pushed above 1.0 (into HDR) at glow strength 1.
+// Lit surfaces never exceed ~1.0, so any pixel brighter than that must come from
+// a glowing material — which is exactly what the bloom bright pass wants to
+// isolate. Without this the scene peaks below the bloom threshold and glow
+// cannot bloom at all.
+const EMISSIVE_HDR: f32 = 2.5;
+
 struct MOut {
   @builtin(position) clip : vec4<f32>,
   @location(0) normal : vec3<f32>,
@@ -124,12 +131,21 @@ fn skinVertex(m: ModelInfo, v: u32, inst: u32) -> array<vec3<f32>, 2> {
   return array<vec3<f32>, 2>(sp.xyz, sn.xyz);
 }
 
-// Rotate model-space coordinates about the Y axis so a model whose authored
-// forward differs from +Z can be aligned without touching its data.
-fn applyModelYaw(p: vec3<f32>, yaw: f32) -> vec3<f32> {
-  let c = cos(yaw);
-  let s = sin(yaw);
-  return vec3<f32>(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+// Rotate model-space coordinates to correct a model whose authored forward is
+// not +Z. Yaw spins about the model's own up axis; pitch then tilts it about the
+// (rotated) X axis, so a mesh authored "nose-up" along +Y can be laid forward
+// without editing its data.
+fn applyModelYawPitch(p: vec3<f32>, yaw: f32, pitch: f32) -> vec3<f32> {
+  let cy = cos(yaw);
+  let sy = sin(yaw);
+  let y1 = p.y;
+  var v = vec3<f32>(cy * p.x + sy * p.z, y1, -sy * p.x + cy * p.z);
+  if (abs(pitch) > 1e-6) {
+    let cp = cos(pitch);
+    let sp = sin(pitch);
+    v = vec3<f32>(v.x, cp * v.y - sp * v.z, sp * v.y + cp * v.z);
+  }
+  return v;
 }
 
 fn modelVS(m: ModelInfo, vi: u32, inst: u32, center: vec3<f32>, vel: vec3<f32>,
@@ -141,8 +157,9 @@ fn modelVS(m: ModelInfo, vi: u32, inst: u32, center: vec3<f32>, vel: vec3<f32>,
   // Baked model-space vertices are normalised to radius 1 at load time, so a
   // straight multiply places the mesh at the agent's physical radius.
   let yaw = m.extra.x;
-  let local = applyModelYaw(sk[0], yaw) * radius;
-  let normal = applyModelYaw(sk[1], yaw);
+  let pitch = m.extra.z;
+  let local = applyModelYawPitch(sk[0], yaw, pitch) * radius;
+  let normal = applyModelYawPitch(sk[1], yaw, pitch);
   let world = center + basis * local;
   o.clip = cam.viewProj * vec4<f32>(world, 1.0);
   o.normal = normalize(basis * safeNormalize(normal, vec3<f32>(0.0, 1.0, 0.0)));
@@ -189,10 +206,10 @@ fn vsObstacle(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
   let idx = indexAt(m, vi);
   // A little larger than the physics radius so obstacles read as solid bodies.
   let r = max(p.posR.w, 0.5) * m.info.x * 0.9;
-  let world = p.posR.xyz + applyModelYaw(vertPos(m, idx), m.extra.x) * r;
+  let world = p.posR.xyz + applyModelYawPitch(vertPos(m, idx), m.extra.x, m.extra.z) * r;
   var o: MOut;
   o.clip = cam.viewProj * vec4<f32>(world, 1.0);
-  o.normal = safeNormalize(applyModelYaw(vertNormal(m, idx), m.extra.x), vec3<f32>(0.0, 1.0, 0.0));
+  o.normal = safeNormalize(applyModelYawPitch(vertNormal(m, idx), m.extra.x, m.extra.z), vec3<f32>(0.0, 1.0, 0.0));
   o.world = world;
   o.uv = vertUV(m, idx);
   o.tint = OBSTACLE_TINT;
@@ -227,7 +244,13 @@ fn fsModel(i: MOut) -> @location(0) vec4<f32> {
   // Emissive ("glow") is lighting-independent per glTF, multiplied by the
   // material's emissiveFactor. The "Model glow strength" slider scales it so the
   // glow can still be dialled down at night.
+  //
+  // The scene renders into an HDR (rgba16float) target, but `shade()` only ever
+  // produces values up to ~1.0 — so without a push above 1.0 an emissive part is
+  // indistinguishable from a lit white surface and the bloom bright pass (which
+  // keys off a threshold) selects nothing. EMISSIVE_HDR scales the glow into
+  // genuine HDR so glowing materials bloom, while lit surfaces stay <= 1.
   let glow = textureSample(emissiveTex, emissiveSmp, i.emissiveUV).rgb;
-  c = vec4<f32>(c.rgb + glow * i.emissiveFactor * i.glow, 1.0);
+  c = vec4<f32>(c.rgb + glow * i.emissiveFactor * (i.glow * EMISSIVE_HDR), 1.0);
   return c;
 }

@@ -20,10 +20,18 @@ export const RENDER_MODULES = {
   hashcells: "shaders/render/hashcells.wgsl",
 };
 
+// Post-processing modules do not touch the scene's storage buffers or camera:
+// they only read the rendered colour and write pixels, so they get their own
+// minimal composition (a bloom module declares its own bind group 0).
+export const POST_MODULES = {
+  bloom: "shaders/render/bloom.wgsl",
+};
+
 // Render modules that need the camera's inverse view-projection (sky) and the
 // full set of storage bindings are all composed the same way here.
 export function allShaderFiles() {
-  return [COMMON, COMPUTE_BINDINGS, RENDER_BINDINGS, RENDER_COMMON, SIM, ...Object.values(RENDER_MODULES)];
+  return [COMMON, COMPUTE_BINDINGS, RENDER_BINDINGS, RENDER_COMMON, SIM,
+          ...Object.values(RENDER_MODULES), ...Object.values(POST_MODULES)];
 }
 
 export function composeCompute(parts) {
@@ -32,6 +40,13 @@ export function composeCompute(parts) {
 
 export function composeRender(parts, name) {
   return [parts[COMMON], parts[RENDER_BINDINGS], parts[RENDER_COMMON], parts[RENDER_MODULES[name]]].join("\n");
+}
+
+// Post-processing modules stand alone: the bloom shader declares its own bind
+// group (group 0) of sampled textures plus one uniform, and needs none of the
+// scene's storage buffers or the camera.
+export function composePost(parts, name) {
+  return parts[POST_MODULES[name]];
 }
 
 // `read(path) -> Promise<string>` (fetch in the browser, fs in Node).

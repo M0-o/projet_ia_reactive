@@ -53,12 +53,30 @@ fn starAmbient(n: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
   return cool * (0.25 + 0.75 * skyFill) + starField(dir, 0.0) * 0.35;
 }
 
+// Orthonormal basis that maps the model's local +Z onto `fwdIn` (the heading).
+// Built as the *minimum rotation* taking world +Z onto the heading and applied
+// to +X/+Y, so the roll reference varies continuously as the heading sweeps in
+// any direction. The previous implementation hard-switched its reference up when
+// |fwd.y| crossed 0.9, snapping the model through a visible roll flip; this has
+// no thresholds at all (the only singularity is an exact 180 degree reversal,
+// handled explicitly).
 fn orthoBasis(fwdIn: vec3<f32>) -> mat3x3<f32> {
   let f = safeNormalize(fwdIn, vec3<f32>(0.0, 0.0, 1.0));
-  let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(f.y) > 0.9);
-  let right = normalize(cross(up, f));
-  let top = cross(f, right);
-  return mat3x3<f32>(right, top, f);
+  let z = vec3<f32>(0.0, 0.0, 1.0);
+  let c = cross(z, f);
+  let d = dot(z, f);
+  if (d < -0.9999) {
+    // Heading is exactly -Z: rotate 180 degrees about X (any axis works; pick a
+    // stable one). This single point cannot be continuous with its neighbours.
+    return mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, -1.0, 0.0), vec3<f32>(0.0, 0.0, -1.0));
+  }
+  // Rodrigues with the shortest arc: v' = v + cross(c, v) + cross(c, cross(c, v)) / (1 + d).
+  let k = 1.0 / (1.0 + d);
+  let ex = vec3<f32>(1.0, 0.0, 0.0);
+  let ey = vec3<f32>(0.0, 1.0, 0.0);
+  let right = ex + cross(c, ex) + cross(c, cross(c, ex)) * k;
+  let up = ey + cross(c, ey) + cross(c, cross(c, ey)) * k;
+  return mat3x3<f32>(right, up, f);
 }
 
 fn cameraRight() -> vec3<f32> {

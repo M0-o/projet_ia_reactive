@@ -14,7 +14,7 @@ harness.
   in a WebGPU-capable browser (recent Chrome/Edge). WebGPU needs a secure
   context; `localhost` counts as secure.
 - `npm test` → runs `test/harness.mjs` headlessly against Dawn (`webgpu` npm
-  bindings). Currently **38 tests pass**.
+  bindings). Currently **41 tests pass**.
 - There is **no** build/lint step.
 
 ## Layout
@@ -39,10 +39,37 @@ Shader sources (`shaders/`), concatenated at load time by `src/sim/compose.js`
   `flockHealUpdate`. (The smoke kernels were removed.)
 - `render/*.wgsl` — `sky` (full-screen night sky), `models` (instanced skinned
   GLB rendering + texture atlas sampling), `food`, `box`, `debug_lines`,
-  `hashcells`.
+  `hashcells`, and `bloom` (the HDR post-process; standalone, with its own bind
+  group so it shares no scene bindings).
   Every pipeline is a **single instanced / procedural draw** — the models shader
   reads vertices, indices and joint frames from one storage buffer, so there is
   still no vertex/index buffer bound anywhere.
+- `bloom.wgsl` runs as three fragment passes: `fsBright` (soft-knee threshold +
+  half-res downsample), `fsBlur` (13-tap separable Gaussian, run horizontally then
+  vertically by ping-ponging two textures) and `fsComposite` (scene + bloom →
+  swapchain). The scene renders into an **rgba16float** target so emissive can
+  exceed 1.0 and the bright pass has headroom. Composite only *adds* the glow; it
+  deliberately does **not** tonemap, so enabling bloom does not change how the
+  rest of the scene looks. A texture may not be sampled and used as a colour
+  target in the same pass, so each bloom pass binds the scene into the unused
+  second texture slot.
+- **Bloom keying is relative to the scene's real range, not [0,1].** The night
+  sky and most lit geometry sit near 0–0.3; only the emissive glow and the
+  brightest highlights go higher. `shade()` alone tops out near 1.0, so
+  `fsModel` scales the emissive term by `EMISSIVE_HDR` (**2.5**) to push glowing
+  materials into genuine HDR — without it the predator's glow peaks just under
+  1.0 and the bright pass selects nothing. The default `bloomThreshold` is
+  therefore **0.4** (not 0.85+): at 0.85 so few pixels qualify that the blur has
+  no energy to spread and bloom is invisible. The blur's sample offsets scale
+  with `bloomRadius`, so the slider widens the halo (and correspondingly lowers
+  the saturated core).
+- **Each post pass needs its own uniform buffer.** All `queue.writeBuffer` calls
+  are queued before the single `submit`, so a shared buffer would let every pass
+  read only the last-written value — the blur would sample with a zero texel
+  step (no spread at all, so radius did nothing) and the composite would just
+  re-add the already-bright pixels. The renderer therefore keeps four small
+  uniforms (`bright`, `blurH`, `blurV`, `composite`) and each pass builds its
+  bind group against its own.
 
 Simulation core (`src/sim/`):
 - `params.js` — `DEFAULTS` + `SCHEMA` (the UI is generated from `SCHEMA`) +
@@ -79,8 +106,8 @@ Browser plumbing:
   human-readable `userMessage` (shown in the UI instead of a blank canvas).
 - `src/math/mat4.js` — column-major matrices, **WebGPU clip space (z ∈ [0,1])**.
 - `src/render/camera.js` — orbit camera → the `Camera` uniform (256 bytes).
-- `src/ui/panel.js` — control panel generated from `SCHEMA`; **5** debug
-  checkboxes (heading, vision, hitbox, bbox, spatial-hash cells).
+- `src/ui/panel.js` — control panel generated from `SCHEMA`; **6** debug / effect
+  checkboxes (heading, vision, hitbox, bbox, spatial-hash cells, bloom).
 - `src/ui/stats.js` — throttled (~250 ms) boid-buffer readback → stats overlay.
 - `src/main.js` — loop, model load/bake, param writeback, debug toggles, resize,
   error display.
@@ -129,9 +156,17 @@ on `globalThis.AL`:
 - `cohesion()` uses **twice** the perception radius while `align()`/`separation()`
   use the plain radius — that asymmetry is in the original `boids.js`, and the
   GPU port must match it (there is a regression test for this).
-- GLB model orientation is a guess: `orthoBasis(vel)` maps the model's local
-  `+Z` to the velocity, which may not be each asset's authored forward. The
-  "Boid/Predator model yaw (deg)" sliders correct this live.
+- **Models follow their heading, and the basis is continuous.** `orthoBasis(vel)`
+  maps the model's local `+Z` onto the velocity as a *minimum rotation* (Rodrigues
+  shortest arc) from world `+Z`, so the roll reference varies smoothly in every
+  direction. The earlier version hard-switched its reference up at
+  `|fwd.y| > 0.9`, which snapped the roll — a visible flip when a boid pitched
+  steeply; the regression test sweeps 64 headings across that threshold and fails
+  if the basis jumps. Each asset's authored forward still may not be `+Z`: the
+  boid's body runs along `+Y` in model space, so its default
+  `boidModelPitch` is **90°**. The "… model yaw/pitch (deg)" sliders correct
+  either live (yaw spins about the model's up axis, pitch then tilts about the
+  rotated X axis).
 - Textured models sample two shared atlases — base colour and emissive
   (`shaders/render/models.wgsl`, bindings 9/10 and 11/12). If either atlas fails
   to build the renderer falls back to a 1x1 texel (grey base, black emissive),

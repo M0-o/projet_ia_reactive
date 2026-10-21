@@ -49,7 +49,7 @@ async function readShaderFile(path) {
 
 async function main() {
   const params = makeParams();
-  const debug = { heading: false, vision: false, hitbox: false, bbox: false, hashCells: false };
+  const debug = { heading: false, vision: false, hitbox: false, bbox: false, hashCells: false, bloom: true };
 
   // The control panel is built up-front so it is usable even if the GPU is
   // unavailable.
@@ -198,7 +198,9 @@ async function main() {
       boidScale: params.boidModelScale,
       predatorScale: params.predatorModelScale,
       boidYaw: params.boidModelYaw,
+      boidPitch: params.boidModelPitch,
       predatorYaw: params.predatorModelYaw,
+      predatorPitch: params.predatorModelPitch,
       glow: params.modelGlow,
     });
     renderer.render(
@@ -212,6 +214,12 @@ async function main() {
       debug,
       widthPx,
       heightPx,
+      {
+        bloom: debug.bloom,
+        threshold: params.bloomThreshold,
+        strength: params.bloomStrength,
+        radius: params.bloomRadius,
+      },
     );
 
     stats.update(params, fps, now).then(() => renderStats(statsEl, stats.get()));

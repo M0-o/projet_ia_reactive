@@ -22,7 +22,7 @@ Object.assign(globalThis, globals);
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 
-const { COMMON, COMPUTE_BINDINGS, SIM, RENDER_MODULES, allShaderFiles, composeCompute, composeRender, loadShaderParts } =
+const { COMMON, COMPUTE_BINDINGS, RENDER_BINDINGS, RENDER_COMMON, SIM, RENDER_MODULES, allShaderFiles, composeCompute, composeRender, loadShaderParts } =
   await import(join(root, "src/sim/compose.js"));
 const { createWorld, CAPACITY, AGENT_STRIDE, GRID_WORDS, MAX_CELLS } = await import(join(root, "src/sim/world.js"));
 const { makeParams, computeGridDims } = await import(join(root, "src/sim/params.js"));
@@ -640,6 +640,107 @@ await test("shader pool layout resolves indices and joints for every model", asy
   }
 });
 
+// ---- model orientation (against the real shader source) ---------------------
+// The models must point along their heading. This compiles the actual
+// orthoBasis from shaders/render_common.wgsl into a probe compute shader and
+// reads the basis back, so the test exercises the shipped WGSL rather than a JS
+// reimplementation that could drift.
+await test("model basis maps local +Z onto the heading, orthonormal and continuous", async () => {
+  // Sample a dense sweep of headings in the XY plane that crosses the
+  // near-vertical threshold (|f.y| ~ 0.9) where a naive basis hard-switches its
+  // reference up and visibly snaps the model's roll. Also a few arbitrary
+  // directions. The probe reads the basis back; a jump between adjacent samples
+  // shows up as a large delta in the `right` column.
+  const SAMPLES = 64;
+  const probe = `
+struct ProbeOut { data: array<f32> };
+@group(0) @binding(20) var<storage, read_write> probeOut: ProbeOut;
+
+@compute @workgroup_size(1)
+fn probe() {
+  let n = ${SAMPLES}u;
+  for (var i = 0u; i < n; i = i + 1u) {
+    let t = f32(i) / f32(n - 1u);          // 0..1
+    let ang = t * 3.14159265;              // sweep the X/Y great circle, past vertical
+    let f = normalize(vec3<f32>(cos(ang), sin(ang), 0.15));
+    let b = orthoBasis(f);
+    let mapped = b * vec3<f32>(0.0, 0.0, 1.0);
+    let r = b[0]; let u = b[1]; let z = b[2];
+    let o = i * 12u;
+    // 0..2: +Z maps onto the heading
+    probeOut.data[o + 0u] = mapped.x - f.x;
+    probeOut.data[o + 1u] = mapped.y - f.y;
+    probeOut.data[o + 2u] = mapped.z - f.z;
+    // 3..5: orthonormality residuals for the three columns
+    probeOut.data[o + 3u] = dot(r, r) - 1.0;
+    probeOut.data[o + 4u] = dot(u, u) - 1.0;
+    probeOut.data[o + 5u] = dot(z, z) - 1.0;
+    // 6..8: mutual perpendicularity
+    probeOut.data[o + 6u] = dot(r, u);
+    probeOut.data[o + 7u] = dot(r, z);
+    probeOut.data[o + 8u] = dot(u, z);
+    // 9..11: the right column, used for the continuity check.
+    probeOut.data[o + 9u]  = r.x;
+    probeOut.data[o + 10u] = r.y;
+    probeOut.data[o + 11u] = r.z;
+  }
+}`;
+  const code = [parts[COMMON], parts[RENDER_BINDINGS], parts[RENDER_COMMON], probe].join("\n");
+  const mod = await compile("orientation-probe", code);
+  const size = SAMPLES * 12 * 4;
+  const outBuf = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const layout = device.createBindGroupLayout({
+    entries: [{ binding: 20, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } }],
+  });
+  const pipeline = device.createComputePipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    compute: { module: mod, entryPoint: "probe" },
+  });
+  const bg = device.createBindGroup({ layout, entries: [{ binding: 20, resource: { buffer: outBuf } }] });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bg);
+  pass.dispatchWorkgroups(1);
+  pass.end();
+  const read = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  enc.copyBufferToBuffer(outBuf, 0, read, 0, size);
+  device.queue.submit([enc.finish()]);
+  await read.mapAsync(GPUMapMode.READ);
+  const out = new Float32Array(read.getMappedRange().slice(0));
+  read.unmap();
+
+  const right = [];
+  for (let i = 0; i < SAMPLES; i++) {
+    const o = i * 12;
+    // The heading must be followed exactly and the basis must stay orthonormal.
+    approx(out[o + 0], 0, 1e-4, `sample ${i}: +Z x`);
+    approx(out[o + 1], 0, 1e-4, `sample ${i}: +Z y`);
+    approx(out[o + 2], 0, 1e-4, `sample ${i}: +Z z`);
+    approx(out[o + 3], 0, 1e-4, `sample ${i}: right not unit`);
+    approx(out[o + 4], 0, 1e-4, `sample ${i}: up not unit`);
+    approx(out[o + 5], 0, 1e-4, `sample ${i}: fwd not unit`);
+    approx(out[o + 6], 0, 1e-4, `sample ${i}: right/up not perpendicular`);
+    approx(out[o + 7], 0, 1e-4, `sample ${i}: right/fwd not perpendicular`);
+    approx(out[o + 8], 0, 1e-4, `sample ${i}: up/fwd not perpendicular`);
+    right.push([out[o + 9], out[o + 10], out[o + 11]]);
+  }
+  // Continuity: as the heading sweeps smoothly, the roll reference must too. A
+  // hard up-vector switch makes `right` jump across the threshold; allow only a
+  // small per-step change appropriate to the sample spacing.
+  let maxJump = 0;
+  for (let i = 1; i < SAMPLES; i++) {
+    const d = Math.hypot(
+      right[i][0] - right[i - 1][0],
+      right[i][1] - right[i - 1][1],
+      right[i][2] - right[i - 1][2],
+    );
+    maxJump = Math.max(maxJump, d);
+  }
+  assert(maxJump < 0.25,
+    `basis rolls discontinuously: largest step was ${maxJump.toFixed(3)} (a snap)`);
+});
+
 // ---- JS 3D reference (the Boid3D subclasses) -------------------------------
 console.log("js 3d reference (Boid3D subclasses)");
 const vm = await import("node:vm");
@@ -941,6 +1042,199 @@ await test("models-only render shows the GLB meshes", async () => {
   }
   assert(lit > 300, `models-only frame shows almost nothing (${lit} lit pixels)`);
 });
+
+// Bloom must actually spread glow beyond the glowing geometry. The bug this
+// pins: the blur passes all read one shared uniform, so every tap sampled the
+// same texel (texelStep collapsed to 0) and the "blur" was a no-op — the radius
+// slider did nothing and the composite merely re-added the already-bright
+// pixels. A real blur distributes that energy outward, so increasing the radius
+// must move pixels out of the saturated core and into the mid-bright halo.
+await test("bloom spreads glow beyond the lit geometry", async () => {
+  const params = { ...params0, boidCount: 120, predatorCount: 10, foodCount: 0, obstacleCount: 4 };
+  const world = createWorld({ device, shaderParts: parts, params });
+  world.setParams(params);
+  world.reset(99);
+  for (let f = 0; f < 20; f++) world.step(1 / 60, f / 60, f);
+  await nextFrame();
+
+  const { createRenderer, createAtlasTexture } = await import(join(root, "src/render/renderer.js"));
+  const { OrbitCamera } = await import(join(root, "src/render/camera.js"));
+  const { collectModelImages, applyAtlas } = await import(join(root, "src/render/models.js"));
+  const boid = bakeModel(await modelBuf("boid"), { keyPrefix: "boid" });
+  const predator = bakeModel(await modelBuf("predator"), { keyPrefix: "predator" });
+  const obstacle = bakeModel(await modelBuf("obstacle"), { keyPrefix: "obstacle" });
+  // Build both atlases (as main.js does) so the emissive glow — the thing bloom
+  // keys off — is actually present. Without the emissive atlas the renderer
+  // falls back to a black 1x1 texture and there is nothing to bloom.
+  const baked = [boid, predator, obstacle];
+  const baseAtlas = await buildAtlas(baked.flatMap((m) => collectModelImages(m, "base")), stubDecode, 64);
+  const emAtlas = await buildAtlas(baked.flatMap((m) => collectModelImages(m, "emissive")), stubDecode, 64);
+  for (const m of baked) applyAtlas(m, baseAtlas.placements, emAtlas.placements, baseAtlas.cell);
+  const pool = buildModelPool(baked);
+  const poolBuffer = device.createBuffer({
+    size: pool.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(poolBuffer, 0, pool);
+
+  const tex = device.createTexture({
+    size: [W, H], format: RENDER_FORMAT,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+  });
+  const camera = new OrbitCamera({ addEventListener() {}, setPointerCapture() {}, releasePointerCapture() {} },
+    [params.worldX, params.worldY, params.worldZ]);
+  const renderer = createRenderer({
+    device, context: { getCurrentTexture: () => tex }, format: RENDER_FORMAT,
+    shaderParts: parts, world,
+    models: {
+      poolBuffer, boid, predator, obstacle,
+      atlasView: createAtlasTexture(device, baseAtlas),
+      emissiveView: createAtlasTexture(device, emAtlas),
+      emissiveStrength: true,
+    },
+  });
+
+  const counts = { boids: params.boidCount, predators: params.predatorCount, food: 0, obstacles: params.obstacleCount };
+  const debugOff = { heading: false, vision: false, hitbox: false, bbox: false, hashCells: false };
+  const bytesPerRow = Math.ceil(W * 4 / 256) * 256;
+
+  async function renderAndMeasure(post) {
+    renderer.updateCamera(camera.update(W, H));
+    renderer.updateModels({
+      boidScale: params.boidModelScale, predatorScale: params.predatorModelScale,
+      boidYaw: 0, boidPitch: params.boidModelPitch,
+      predatorYaw: 0, predatorPitch: params.predatorModelPitch,
+      glow: params.modelGlow,
+    });
+    renderer.render(counts, debugOff, W, H, post);
+    const read = device.createBuffer({ size: bytesPerRow * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: tex }, { buffer: read, bytesPerRow }, [W, H]);
+    device.queue.submit([enc.finish()]);
+    await read.mapAsync(GPUMapMode.READ);
+    const pixels = new Uint8Array(read.getMappedRange().slice(0));
+    read.unmap();
+    read.destroy();
+    // Count the mid-bright halo (the glow on the dark sky) separately from the
+    // saturated core. A real blur grows the halo; a no-op "blur" only brightens
+    // the existing core.
+    let halo = 0, core = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = y * bytesPerRow + x * 4;
+        const luma = pixels[o + 2] * 0.3 + pixels[o + 1] * 0.6 + pixels[o] * 0.1;
+        if (luma > 240) core++;
+        else if (luma > 25) halo++;
+      }
+    }
+    return { halo, core };
+  }
+
+  const without = await renderAndMeasure({ bloom: false });
+  const small = await renderAndMeasure({ bloom: true, threshold: params.bloomThreshold, strength: params.bloomStrength, radius: 0.5 });
+  const large = await renderAndMeasure({ bloom: true, threshold: params.bloomThreshold, strength: params.bloomStrength, radius: 4.0 });
+
+  // Bloom must visibly glow: the halo has to grow well beyond the unbloomed
+  // frame's mid-bright pixels.
+  assert(large.halo > without.halo * 2 + 200,
+    `bloom added no glow: ${without.halo} mid-bright pixels without vs ${large.halo} with`);
+
+  // And the radius must matter: a wider blur moves energy out of the core and
+  // into the halo. With the shared-uniform bug both radii were identical.
+  assert(large.halo > small.halo * 1.15,
+    `bloom radius did nothing: halo ${small.halo} at radius 0.5 vs ${large.halo} at radius 4.0`);
+  assert(large.core < small.core,
+    `bloom radius did not spread the core: core ${small.core} at radius 0.5 vs ${large.core} at radius 4.0`);
+});
+
+// The bloom bright pass keys off a luminance threshold, so the scene must
+// actually carry values above it. `shade()` alone tops out near 1.0, so the
+// emissive term has to be scaled into genuine HDR headroom — otherwise the
+// predator's glow sits just under the threshold and the blur has nothing to
+// spread (which is how bloom silently became a no-op before). This reads the
+// scene's HDR target and asserts measurable headroom above the default
+// threshold.
+await test("emissive glow pushes the scene into HDR above the bloom threshold", async () => {
+  const params = { ...params0, boidCount: 60, predatorCount: 16, foodCount: 0, obstacleCount: 0 };
+  const world = createWorld({ device, shaderParts: parts, params });
+  world.setParams(params);
+  world.reset(7);
+  for (let f = 0; f < 20; f++) world.step(1 / 60, f / 60, f);
+  await nextFrame();
+
+  const { createRenderer, createAtlasTexture } = await import(join(root, "src/render/renderer.js"));
+  const { OrbitCamera } = await import(join(root, "src/render/camera.js"));
+  const boid = bakeModel(await modelBuf("boid"), { keyPrefix: "boid" });
+  const predator = bakeModel(await modelBuf("predator"), { keyPrefix: "predator" });
+  const obstacle = bakeModel(await modelBuf("obstacle"), { keyPrefix: "obstacle" });
+  const baked = [boid, predator, obstacle];
+  const baseAtlas = await buildAtlas(baked.flatMap((m) => collectModelImages(m, "base")), stubDecode, 64);
+  const emAtlas = await buildAtlas(baked.flatMap((m) => collectModelImages(m, "emissive")), stubDecode, 64);
+  for (const m of baked) applyAtlas(m, baseAtlas.placements, emAtlas.placements, baseAtlas.cell);
+  const pool = buildModelPool(baked);
+  const poolBuffer = device.createBuffer({
+    size: pool.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(poolBuffer, 0, pool);
+
+  const tex = device.createTexture({
+    size: [W, H], format: RENDER_FORMAT,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+  });
+  const camera = new OrbitCamera({ addEventListener() {}, setPointerCapture() {}, releasePointerCapture() {} },
+    [params.worldX, params.worldY, params.worldZ]);
+  const renderer = createRenderer({
+    device, context: { getCurrentTexture: () => tex }, format: RENDER_FORMAT,
+    shaderParts: parts, world,
+    models: {
+      poolBuffer, boid, predator, obstacle,
+      atlasView: createAtlasTexture(device, baseAtlas),
+      emissiveView: createAtlasTexture(device, emAtlas),
+      emissiveStrength: true,
+    },
+  });
+  renderer.updateCamera(camera.update(W, H));
+  renderer.updateModels({
+    boidScale: params.boidModelScale, predatorScale: params.predatorModelScale,
+    boidYaw: 0, boidPitch: params.boidModelPitch,
+    predatorYaw: 0, predatorPitch: params.predatorModelPitch,
+    glow: params.modelGlow,
+  });
+  renderer.render(
+    { boids: params.boidCount, predators: params.predatorCount, food: 0, obstacles: 0 },
+    { heading: false, vision: false, hitbox: false, bbox: false, hashCells: false },
+    W, H, { bloom: false });
+
+  // Read the HDR scene target back as half-floats and decode.
+  const hdrTex = renderer.hdrTexture();
+  assert(hdrTex, "renderer must expose its HDR scene target");
+  const bytesPerRow = Math.ceil(W * 8 / 256) * 256; // rgba16float is 8 bytes/texel
+  const read = device.createBuffer({ size: bytesPerRow * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: hdrTex }, { buffer: read, bytesPerRow }, [W, H]);
+  device.queue.submit([enc.finish()]);
+  await read.mapAsync(GPUMapMode.READ);
+  const u16 = new Uint16Array(read.getMappedRange().slice(0));
+  read.unmap();
+  read.destroy();
+  const half = (h) => {
+    const s = (h & 0x8000) >> 15, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+    if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (m / 1024);
+    if (e === 31) return m ? NaN : (s ? -1 : 1) * Infinity;
+    return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + m / 1024);
+  };
+  let peak = 0, above = 0, aboveOne = 0;
+  for (let i = 0; i < u16.length; i += 4) {
+    const r = half(u16[i]), g = half(u16[i + 1]), b = half(u16[i + 2]);
+    const l = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    if (l > peak) peak = l;
+    if (l > params.bloomThreshold) above++;
+    if (l > 1.0) aboveOne++;
+  }
+  assert(peak > 1.0, `scene never exceeds 1.0 (peak ${peak.toFixed(3)}); emissive has no HDR headroom`);
+  assert(aboveOne > 0, `no pixel above 1.0; the bright pass would only see lit highlights`);
+  assert(above > 20, `only ${above} pixels above the bloom threshold ${params.bloomThreshold}`);
+});
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {
   for (const f of failures) console.error(`\n${f.name}\n${f.err.stack}`);

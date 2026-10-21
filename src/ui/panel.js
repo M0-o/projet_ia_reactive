@@ -5,13 +5,14 @@
 
 import { SCHEMA } from "../sim/params.js";
 
-export const DEBUG_KEYS = ["heading", "vision", "hitbox", "bbox", "hashCells"];
+export const DEBUG_KEYS = ["heading", "vision", "hitbox", "bbox", "hashCells", "bloom"];
 export const DEBUG_LABELS = {
   heading: "Heading vectors",
   vision: "Vision radius",
   hitbox: "Hitboxes",
   bbox: "Bounding boxes",
   hashCells: "Spatial-hash cells",
+  bloom: "Bloom (glow)",
 };
 
 // Builds the panel DOM. `onChange(key, value)` fires for param sliders;
