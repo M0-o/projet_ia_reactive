@@ -108,7 +108,10 @@ npm test
 checks shader compilation, the spatial-hash sort/scan, boid behaviour (bounds,
 health, eating, avoidance, predator hits), GLB parsing/animation baking, the JS
 3D reference classes, and an **offscreen render-to-texture readback** that
-asserts visible pixels.
+asserts visible pixels. It also pins the **bloom shape** (the glow must reach
+past the lit geometry, the radius slider must widen it, and the glow must be
+round rather than a streak) and the predator's **smooth turning at the world
+boundary**.
 
 Note: a real GPU adapter is not available in every environment (e.g. a headless
 CI container), so the night sky, model orientation and the spatial-hash overlay

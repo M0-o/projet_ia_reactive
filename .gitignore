@@ -1,1 +1,5 @@
 node_modules
+
+# Throwaway diagnostic scripts (prefixed with "_") — they are written, run and
+# deleted per investigation and must never end up in a commit.
+/_*.mjs
