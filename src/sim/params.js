@@ -98,7 +98,7 @@ export const DEFAULTS = {
   // that. A threshold near 0.4 therefore isolates the glow and its highlights
   // while leaving the dark background alone — at 1.0 (or even 0.85) so few
   // pixels qualify that the blur has nothing to spread and bloom is invisible.
-  bloomThreshold: 0.4,
+  bloomThreshold: 1.0,
   bloomStrength: 1.0,
   // Width of the bloom's soft "veil" layer (in texels of the half-resolution
   // bloom target, scaled by this slider). The kernel has a tight core plus
