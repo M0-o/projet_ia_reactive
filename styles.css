@@ -146,3 +146,41 @@ html, body {
   cursor: pointer;
 }
 .panel-check input { accent-color: var(--accent); }
+
+/* ---- Hide-UI toggle ---- */
+/* The button lives outside the panel so it remains visible when the panel and
+   the stats overlay are hidden. `ui-hidden` on <body> slides the panel out and
+   hides the overlays. */
+.ui-toggle {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 30;
+  padding: 7px 12px;
+  color: var(--text);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  font: inherit;
+}
+.ui-toggle:hover { background: #1d2b3d; border-color: var(--accent); }
+
+.panel,
+#stats {
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+body.ui-hidden .panel {
+  transform: translateX(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+body.ui-hidden #stats {
+  transform: translateY(-140%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* Keep the button clear of the panel (320px wide) while the panel is open; it
+   drops back into the corner once the panel is hidden. */
+body:not(.ui-hidden) .ui-toggle { right: 332px; }

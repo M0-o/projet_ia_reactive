@@ -407,7 +407,9 @@ export function createRenderer({ device, context, format, shaderParts, world, mo
 
     // 1. Bright pass: HDR scene -> bloomA (downsampled). Its bind group must not
     // reference bloomA (the target), so the unused second texture is bloomB.
-    writePostUniform("bright", threshold, strength, radius, 0);
+    // The bright pass dilates the source by one texel in each direction, so it
+    // needs a real texel step (it used to point-sample and passed 0).
+    writePostUniform("bright", threshold, strength, radius, 1 / bw);
     const brightPass = enc.beginRenderPass({
       colorAttachments: [{ view: bloomAView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: "store" }],
     });

@@ -438,14 +438,21 @@ fn predatorsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   var bestD = 1.0e9;
   var bestIdx = -1;
+  let selfFwd = safeNormalize(vel, vec3<f32>(0.0, 0.0, 1.0));
   for (var bi = 0u; bi < P.counts.x; bi = bi + 1u) {
     let b = boids[bi];
     if (b.info.x < 0.5) { continue; }
-    let d = distance(pos, b.posH.xyz);
-    if (d < bestD) { bestD = d; bestIdx = i32(bi); }
+    let toB = b.posH.xyz - pos;
+    let d = length(toB);
+    // Only chase prey that is actually *ahead* of the predator. Without this a
+    // predator would lock onto whichever boid happened to be nearest — even one
+    // behind it — and drive straight at the wall behind it instead of turning.
+    let facing = dot(safeNormalize(toB, selfFwd), selfFwd);
+    if (facing > 0.0 && d < bestD) { bestD = d; bestIdx = i32(bi); }
   }
 
   var force = vec3<f32>(0.0);
+  var theta = p.velD.w;
   if (bestIdx >= 0 && bestD < P.predator.z * 3.0) {
     let goal = boids[u32(bestIdx)].posH.xyz;
     force = limitLen(setMagSafe(goal - pos, P.predator.x) - vel, P.predator.y);
@@ -459,27 +466,47 @@ fn predatorsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
       p.info.z = P.predator.w;
     }
   } else {
-    let fwd = safeNormalize(vel, vec3<f32>(0.0, 0.0, 1.0));
+    // Wander uses a *persistent* angle nudged a little each frame (exactly like
+    // the boid, which keeps its theta in `info.z`). The earlier version re-rolled
+    // the angle from `hash2(i, frame)` every frame, so the wander target jumped
+    // to a random point on the perpendicular circle each tick and the heading
+    // whipped around — which read as "sporadic" motion and made wall turns snap.
+    // Predators never accumulate hits, so `velD.w` is free to carry the angle.
+    let fwd = selfFwd;
     let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(fwd.y) > 0.9);
     let tangent = safeNormalize(cross(up, fwd), vec3<f32>(1.0, 0.0, 0.0));
     let bitangent = cross(fwd, tangent);
-    let ang = hash2(i, u32(P.timing.z)) * TAU;
     let centre = pos + fwd * P.wanderP.x;
-    let pt = centre + (tangent * cos(ang) + bitangent * sin(ang)) * P.wanderP.y;
+    let pt = centre + (tangent * cos(theta) + bitangent * sin(theta)) * P.wanderP.y;
     force = limitLen(setMagSafe(pt - pos, P.predator.x) - vel, P.predator.y);
+    theta = theta + (hash2(i, u32(P.timing.z)) * 2.0 - 1.0) * P.wanderP.z;
   }
 
+  // Boundary steer. The original hard-swap `desired` snapped the velocity to
+  // point straight off the wall the instant the margin was entered, so a
+  // predator chasing prey near a wall made a near-instant about-face. Instead
+  // grow a purely inward force with how deep into the margin the predator is and
+  // with how much of its velocity is heading *out* of the box, so the turn is
+  // proportional and begins before contact. The inward push is applied as an
+  // additive accel (like every other steering term) rather than by overwriting
+  // `desired`, so the chase keeps contributing and the heading eases round.
   let bd = P.motion.w;
-  var desired = vec3<f32>(0.0);
-  var nearEdge = false;
-  if (pos.x < minB.x + bd) { desired = vec3<f32>(P.predator.x, vel.y, vel.z); nearEdge = true; }
-  else if (pos.x > maxB.x - bd) { desired = vec3<f32>(-P.predator.x, vel.y, vel.z); nearEdge = true; }
-  if (pos.y < minB.y + bd) { desired = vec3<f32>(vel.x, P.predator.x, vel.z); nearEdge = true; }
-  else if (pos.y > maxB.y - bd) { desired = vec3<f32>(vel.x, -P.predator.x, vel.z); nearEdge = true; }
-  if (pos.z < minB.z + bd) { desired = vec3<f32>(vel.x, vel.y, P.predator.x); nearEdge = true; }
-  else if (pos.z > maxB.z - bd) { desired = vec3<f32>(vel.x, vel.y, -P.predator.x); nearEdge = true; }
-  if (nearEdge) {
-    force = force + limitLen(setMagSafe(desired, P.predator.x) - vel, P.predator.y) * P.weights1.w;
+  var inward = vec3<f32>(0.0);
+  if (pos.x < minB.x + bd) { inward.x = inward.x + (minB.x + bd - pos.x) / bd; }
+  else if (pos.x > maxB.x - bd) { inward.x = inward.x - (pos.x - (maxB.x - bd)) / bd; }
+  if (pos.y < minB.y + bd) { inward.y = inward.y + (minB.y + bd - pos.y) / bd; }
+  else if (pos.y > maxB.y - bd) { inward.y = inward.y - (pos.y - (maxB.y - bd)) / bd; }
+  if (pos.z < minB.z + bd) { inward.z = inward.z + (minB.z + bd - pos.z) / bd; }
+  else if (pos.z > maxB.z - bd) { inward.z = inward.z - (pos.z - (maxB.z - bd)) / bd; }
+  if (length(inward) > EPS) {
+    // Urgency rises with depth into the margin and with the outward component of
+    // travel, so a predator already turning away is pushed far less than one
+    // barrelling at the wall.
+    let depth = clamp(length(inward), 0.0, 1.0);
+    let outward = clamp(dot(safeNormalize(vel, vec3<f32>(0.0, 0.0, 1.0)), safeNormalize(inward, vec3<f32>(0.0, 1.0, 0.0))), 0.0, 1.0);
+    let urgency = depth * (0.35 + 0.65 * outward);
+    let desired = safeNormalize(inward, vec3<f32>(0.0, 1.0, 0.0)) * P.predator.x;
+    force = force + limitLen(desired - vel, P.predator.y) * (P.weights1.w * urgency);
   }
 
   var npos = pos + vel * dt;
@@ -487,7 +514,7 @@ fn predatorsUpdate(@builtin(global_invocation_id) gid: vec3<u32>) {
   npos = min(max(npos, minB), maxB);
 
   p.posH = vec4<f32>(npos, 100.0);
-  p.velD = vec4<f32>(nvel, p.velD.w);
+  p.velD = vec4<f32>(nvel, theta);
   p.info = vec4<f32>(1.0, p.info.y + dt, max(0.0, p.info.z - dt), p.info.w);
   predators[i] = p;
 }

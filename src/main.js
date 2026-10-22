@@ -76,6 +76,24 @@ async function main() {
     debug,
   });
 
+  // Hide/show the control UI: the panel and the stats overlay slide away, the
+  // toggle button stays put so it can bring them back. Bound to `H` as well.
+  const uiToggle = document.getElementById("ui-toggle");
+  const setUiHidden = (hidden) => {
+    document.body.classList.toggle("ui-hidden", hidden);
+    uiToggle.textContent = hidden ? "Show UI" : "Hide UI";
+    uiToggle.setAttribute("aria-expanded", String(!hidden));
+  };
+  uiToggle.addEventListener("click", () =>
+    setUiHidden(!document.body.classList.contains("ui-hidden")));
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "h" && e.key !== "H") return;
+    // Don't steal the key while a control (slider/number/checkbox) has focus.
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    setUiHidden(!document.body.classList.contains("ui-hidden"));
+  });
+
   let shaderParts;
   try {
     shaderParts = await loadShaderParts(readShaderFile);

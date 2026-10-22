@@ -21,7 +21,7 @@ const GRID_WORDS: u32 = O_SPARE + 8u;
 
 // One moving agent (boid or predator).
 //   posH.w = health [0..100]
-//   velD.w = accumulated hits taken
+//   velD.w = boids: accumulated hits taken / predators: persistent wander angle
 //   info  = (alive, age_seconds, wanderTheta, radius)
 struct Agent {
   posH : vec4<f32>,

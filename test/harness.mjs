@@ -441,6 +441,44 @@ await test("respawned predator spawns with a well-defined heading", async () => 
   assert(dot > 0, "respawned predator should be heading back toward the world centre");
 });
 
+// Predators used to wheel around instantly at the box boundary: the boundary
+// steer hard-swapped `desired` to point straight off the wall the moment the
+// margin was entered, so a predator that had been chasing prey at a wall made a
+// near-180-degree about-face in a single frame. On top of that the wander target
+// was re-rolled from the frame counter every tick, so the heading jittered. This
+// pins a smooth turn: with no prey at all a predator charging the wall must ease
+// around over many frames rather than snapping.
+await test("predator turns smoothly at the boundary instead of snapping around", async () => {
+  const params = { ...params0, boidCount: 0, predatorCount: 1, foodCount: 0, obstacleCount: 0 };
+  const world = createWorld({ device, shaderParts: parts, params });
+  world.setParams(params);
+  world.reset(3);
+  await nextFrame();
+
+  // Start near the +X wall, travelling straight at it at full speed.
+  const wall = params.worldX / 2;
+  await writeAgent(world.buffers.predators, 0,
+    { pos: [wall - 30, 0, 0], vel: [params.predatorSpeed, 0, 0] });
+
+  let prev = null, maxTurnDeg = 0;
+  for (let f = 0; f < 300; f++) {
+    world.step(1 / 60, f / 60, f);
+    const raw = await world.readBuffer(world.buffers.predators, 12 * 4);
+    const a = agentAt(new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4), 0);
+    const speed = Math.hypot(a.vel[0], a.vel[1], a.vel[2]);
+    if (speed < 1) continue;
+    const d = a.vel.map((v) => v / speed);
+    if (prev) {
+      const c = Math.max(-1, Math.min(1, d[0] * prev[0] + d[1] * prev[1] + d[2] * prev[2]));
+      maxTurnDeg = Math.max(maxTurnDeg, (Math.acos(c) * 180) / Math.PI);
+    }
+    prev = d;
+  }
+  assert(maxTurnDeg < 30,
+    `predator snapped ${maxTurnDeg.toFixed(1)} deg in one frame at the boundary ` +
+    "(a hard about-face); steering should ease round");
+});
+
 await test("boids avoid obstacles (never overlap an obstacle core)", async () => {
   const params = { ...params0, boidCount: 300, predatorCount: 0, foodCount: 0, obstacleCount: 1,
     healthDecayPerSec: 0, obstacleRadius: 22, boidRespawnDelay: 1000, wanderWeight: 0.6 };
@@ -1230,12 +1268,12 @@ await test("bloom spreads glow beyond the lit geometry", async () => {
   const debugOff = { heading: false, vision: false, hitbox: false, bbox: false, hashCells: false };
   const bytesPerRow = Math.ceil(W * 4 / 256) * 256;
 
-  async function renderAndMeasure(post) {
+  async function renderLuma(post) {
     renderer.updateCamera(camera.update(W, H));
     renderer.updateModels({
       boidScale: params.boidModelScale, predatorScale: params.predatorModelScale,
       boidYaw: 0, boidPitch: params.boidModelPitch,
-      predatorYaw: 0, predatorPitch: params.predatorModelPitch,
+      predatorYaw: params.predatorModelYaw, predatorPitch: params.predatorModelPitch,
       glow: params.modelGlow,
     });
     renderer.render(counts, debugOff, W, H, post);
@@ -1247,36 +1285,71 @@ await test("bloom spreads glow beyond the lit geometry", async () => {
     const pixels = new Uint8Array(read.getMappedRange().slice(0));
     read.unmap();
     read.destroy();
-    // Count the mid-bright halo (the glow on the dark sky) separately from the
-    // saturated core. A real blur grows the halo; a no-op "blur" only brightens
-    // the existing core.
-    let halo = 0, core = 0;
+    const luma = new Float32Array(W * H);
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const o = y * bytesPerRow + x * 4;
-        const luma = pixels[o + 2] * 0.3 + pixels[o + 1] * 0.6 + pixels[o] * 0.1;
-        if (luma > 240) core++;
-        else if (luma > 25) halo++;
+        luma[y * W + x] = pixels[o + 2] * 0.3 + pixels[o + 1] * 0.6 + pixels[o] * 0.1;
       }
     }
-    return { halo, core };
+    return luma;
   }
 
-  const without = await renderAndMeasure({ bloom: false });
-  const small = await renderAndMeasure({ bloom: true, threshold: params.bloomThreshold, strength: params.bloomStrength, radius: 0.5 });
-  const large = await renderAndMeasure({ bloom: true, threshold: params.bloomThreshold, strength: params.bloomStrength, radius: 4.0 });
+  // Characterise the bloom layer: what it lights up on top of the scene.
+  function analyse(base, bloomed) {
+    let beyond = 0, core = 0, mid = 0;
+    let total = 0, cx = 0, cy = 0;
+    const d = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const l = bloomed[i];
+        if (l > 240) core++;
+        else if (l > 25) mid++;
+        // Glow on pixels that were dark before: the haze reaching past the
+        // geometry that actually emits it.
+        if (l > 25 && base[i] <= 25) beyond++;
+        const dv = Math.max(0, l - base[i]);
+        d[i] = dv;
+        total += dv; cx += dv * x; cy += dv * y;
+      }
+    }
+    if (total <= 0) return { beyond, core, mid, rms: 0, iso: 0, total };
+    cx /= total; cy /= total;
+    let sx = 0, sy = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const dv = d[y * W + x];
+        sx += dv * (x - cx) ** 2; sy += dv * (y - cy) ** 2;
+      }
+    }
+    sx = Math.sqrt(sx / total); sy = Math.sqrt(sy / total);
+    return { beyond, core, mid, rms: Math.sqrt(sx * sy), iso: Math.min(sx, sy) / Math.max(sx, sy), total };
+  }
 
-  // Bloom must visibly glow: the halo has to grow well beyond the unbloomed
-  // frame's mid-bright pixels.
-  assert(large.halo > without.halo * 2 + 200,
-    `bloom added no glow: ${without.halo} mid-bright pixels without vs ${large.halo} with`);
+  const baseLuma = await renderLuma({ bloom: false });
+  const small = analyse(baseLuma, await renderLuma({ bloom: true, threshold: params.bloomThreshold, strength: params.bloomStrength, radius: 0.5 }));
+  const large = analyse(baseLuma, await renderLuma({ bloom: true, threshold: params.bloomThreshold, strength: params.bloomStrength, radius: 4.0 }));
 
-  // And the radius must matter: a wider blur moves energy out of the core and
-  // into the halo. With the shared-uniform bug both radii were identical.
-  assert(large.halo > small.halo * 1.15,
-    `bloom radius did nothing: halo ${small.halo} at radius 0.5 vs ${large.halo} at radius 4.0`);
-  assert(large.core < small.core,
-    `bloom radius did not spread the core: core ${small.core} at radius 0.5 vs ${large.core} at radius 4.0`);
+  // Bloom must visibly glow: it has to light up pixels that were dark before,
+  // not merely brighten the geometry that already emits it.
+  assert(large.beyond > 200,
+    `bloom added no glow beyond the lit geometry: ${large.beyond} pixels lit up`);
+  assert(large.beyond > small.beyond,
+    `bloom added less glow at radius 4.0 than at 0.5: ${small.beyond} vs ${large.beyond}`);
+
+  // And the radius must matter: a wider blur spreads the glow over a larger
+  // area, so the rms radius of the bloom layer grows. With the shared-uniform
+  // bug every tap sampled the same texel and both radii were identical.
+  assert(large.rms > small.rms * 1.1,
+    `bloom radius did nothing: rms ${small.rms.toFixed(1)} px at radius 0.5 vs ${large.rms.toFixed(1)} px at radius 4.0`);
+
+  // The glow must be a round mist, not a streak: the bloom layer's spread has
+  // to be about the same on both axes. A gapped kernel (the old `k^1.35` tap
+  // spacing) copied the source to a handful of discrete positions, which read
+  // as a line of ghost streaks instead of a haze.
+  assert(large.iso > 0.6,
+    `bloom is not round: anisotropy ${large.iso.toFixed(3)} (1.0 = perfectly round)`);
 });
 
 // The bloom bright pass keys off a luminance threshold, so the scene must

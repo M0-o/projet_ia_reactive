@@ -18,6 +18,10 @@ requires a secure context; `localhost` qualifies. If WebGPU is missing or the
 machine has no adapter, the app shows a clear on-screen message with a hint
 instead of a blank canvas.
 
+See `specs.md` for the full functional specification and `challenges.md` for the
+problems hit during development and how they were solved. `AGENTS.md` holds the
+day-to-day invariants and gotchas.
+
 ## What you get
 
 - **Boids** steer with alignment / cohesion / separation, avoid obstacles and
@@ -41,7 +45,10 @@ instead of a blank canvas.
   (self-lit) maps. The **Bloom** section controls the HDR glow pass: threshold
   (measured against the scene's real range — raise it to keep only the brightest
   emissive highlights, lower it to let more of the scene glow), strength and
-  radius (the halo width).
+  radius (the width of the soft haze the glow fades into).
+- The **Hide UI** button (top right, or the **H** key) slides the panel and the
+  stats overlay away for an unobstructed view of the simulation; the button
+  stays put so they can be brought back.
 - **Debug / effect overlays** are six independent toggles — heading vectors,
   vision radius, hitboxes, bounding boxes, **spatial-hash cells** (the occupied
   cells of the neighbour grid), and **bloom** (the glow post-process). Only the
@@ -51,7 +58,7 @@ instead of a blank canvas.
 
 | Piece | Where |
 | --- | --- |
-| Compute kernels (10 entry points) | `shaders/sim.wgsl` |
+| Compute kernels (11 entry points) | `shaders/sim.wgsl` |
 | Shared structs / bindings | `shaders/common.wgsl`, `shaders/*_bindings.wgsl` |
 | Render modules | `shaders/render/*.wgsl` |
 | Simulation buffers + `step()` | `src/sim/world.js` |

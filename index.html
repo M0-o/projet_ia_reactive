@@ -24,6 +24,10 @@
   <canvas id="view"></canvas>
   <div id="stats" class="overlay"></div>
   <div id="error" class="overlay error hidden"></div>
+  <!-- Floats separately from the panel so it stays reachable once the panel is
+       hidden. Toggles the `ui-hidden` class on <body>. -->
+  <button id="ui-toggle" class="ui-toggle" type="button" title="Show/hide controls (H)"
+    aria-controls="panel" aria-expanded="true">Hide UI</button>
   <aside id="panel" class="panel"></aside>
   <script type="module" src="src/main.js"></script>
 </body>

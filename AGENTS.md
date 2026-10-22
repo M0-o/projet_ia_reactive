@@ -9,12 +9,15 @@ app itself is **plain static ES modules**: no bundler, no build step, no
 transpiler. `package.json` exists only for the dev server and the headless test
 harness.
 
+Companion docs: `specs.md` (functional specification) and `challenges.md`
+(development problems and their solutions).
+
 ## Running
 - `npm run serve` → serves the repo on <http://localhost:8080>. Open that URL
   in a WebGPU-capable browser (recent Chrome/Edge). WebGPU needs a secure
   context; `localhost` counts as secure.
 - `npm test` → runs `test/harness.mjs` headlessly against Dawn (`webgpu` npm
-  bindings). Currently **43 tests pass**.
+  bindings). Currently **44 tests pass**.
 - There is **no** build/lint step.
 
 ## Layout
@@ -45,14 +48,28 @@ Shader sources (`shaders/`), concatenated at load time by `src/sim/compose.js`
   reads vertices, indices and joint frames from one storage buffer, so there is
   still no vertex/index buffer bound anywhere.
 - `bloom.wgsl` runs as three fragment passes: `fsBright` (soft-knee threshold +
-  half-res downsample), `fsBlur` (13-tap separable Gaussian, run horizontally then
-  vertically by ping-ponging two textures) and `fsComposite` (scene + bloom →
-  swapchain). The scene renders into an **rgba16float** target so emissive can
-  exceed 1.0 and the bright pass has headroom. Composite only *adds* the glow; it
+  half-res downsample, plus a 5-tap cross that **dilates** the source), `fsBlur`
+  (separable **two-scale** kernel, run horizontally then vertically by
+  ping-ponging two textures) and `fsComposite` (scene + bloom → swapchain). The
+  scene renders into an **rgba16float** target so emissive can exceed 1.0 and
+  the bright pass has headroom. Composite only *adds* the glow; it
   deliberately does **not** tonemap, so enabling bloom does not change how the
   rest of the scene looks. A texture may not be sampled and used as a colour
   target in the same pass, so each bloom pass binds the scene into the unused
   second texture slot.
+- **The bloom kernel is contiguous, and it has two scales.** A tap at
+  `(k - 0.5)` texel steps samples *every* position between the centre and the
+  far edge; the old `k^1.35` spacing skipped over the one-or-two-texel-wide
+  source and merely **copied** it to a handful of positions, which read as a
+  row of ghost streaks. On top of the contiguous taps the kernel sums a tight
+  **core** (σ ≈ 1.2 texels) with a wide **veil** (σ = 3 + 6 × `bloomRadius`
+  texels), weighted 40/60 — a single-scale blur is either a hot blob or a
+  washed-out smear, and the pairing is what reads as a hazy mist. The bright
+  pass dilates the source by one texel because without it the blur's nearest
+  tap lands a whole texel away and can sample *past* the source. The composite
+  desaturates the glow toward **its own luminance** (35 %): mixing toward
+  white by a constant instead adds that constant to every pixel of the frame,
+  which is a full-screen wash, not bloom.
 - **Bloom keying is relative to the scene's real range, not [0,1].** The night
   sky and most lit geometry sit near 0–0.3; only the emissive glow and the
   brightest highlights go higher. `shade()` alone tops out near 1.0, so
@@ -60,9 +77,9 @@ Shader sources (`shaders/`), concatenated at load time by `src/sim/compose.js`
   materials into genuine HDR — without it the predator's glow peaks just under
   1.0 and the bright pass selects nothing. The default `bloomThreshold` is
   therefore **0.4** (not 0.85+): at 0.85 so few pixels qualify that the blur has
-  no energy to spread and bloom is invisible. The blur's sample offsets scale
-  with `bloomRadius`, so the slider widens the halo (and correspondingly lowers
-  the saturated core).
+  no energy to spread and bloom is invisible. The **veil's** width scales with
+  `bloomRadius`, so the slider widens the haze (and correspondingly lowers the
+  saturated core).
 - **Each post pass needs its own uniform buffer.** All `queue.writeBuffer` calls
   are queued before the single `submit`, so a shared buffer would let every pass
   read only the last-written value — the blur would sample with a zero texel
@@ -110,7 +127,9 @@ Browser plumbing:
   checkboxes (heading, vision, hitbox, bbox, spatial-hash cells, bloom).
 - `src/ui/stats.js` — throttled (~250 ms) boid-buffer readback → stats overlay.
 - `src/main.js` — loop, model load/bake, param writeback, debug toggles, resize,
-  error display.
+  error display, and the **hide-UI toggle** (a floating `#ui-toggle` button
+  outside the panel, plus the `H` key; both set `body.ui-hidden`, which slides
+  the panel out and fades the stats overlay).
 
 Legacy 3D reference (`src/legacy/`), loaded as **classic scripts** and exposed
 on `globalThis.AL`:
@@ -181,6 +200,22 @@ on `globalThis.AL`:
   respawn paths (`boidsUpdate`, `predatorsUpdate`) therefore call `makeAgent`
   with a `spawnVel(...)` that points toward the world centre at a fraction of the
   agent's max speed, so a respawned predator renders coherently from frame one.
+- **Predator steering is smooth at the boundary.** Two separate defects made
+  predators "wheel around" at the box edge. (1) The boundary steer *hard-swapped*
+  `desired` to point straight off the wall the instant the margin was entered, so
+  a predator chasing prey at a wall made a near-180° about-face in one frame
+  (measured: **139.5°/frame**). It now grows a purely inward accel with how deep
+  into the margin the predator is *and* with how much of its velocity points
+  out of the box, applied additively like every other steering term, so the turn
+  eases in (**<30°/frame**; ~13° in practice). (2) The predator's wander target
+  was re-rolled from `hash2(i, frame)` every tick, so the target jumped to a
+  random point on the perpendicular circle each frame and the heading jittered.
+  It now carries a *persistent* angle in `velD.w` (predators never take hits, so
+  that slot is free where boids keep their hit count) and nudges it by
+  `wanderDisplace` per frame — exactly the scheme the boid uses with `info.z`.
+  A predator also only targets prey that is *ahead* of it, so it no longer locks
+  onto a boid behind it and drives at the wall behind itself. The regression test
+  `predator turns smoothly at the boundary instead of snapping around` pins this.
 - Textured models sample two shared atlases — base colour and emissive
   (`shaders/render/models.wgsl`, bindings 9/10 and 11/12). If either atlas fails
   to build the renderer falls back to a 1x1 texel (grey base, black emissive),

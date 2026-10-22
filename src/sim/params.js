@@ -100,7 +100,11 @@ export const DEFAULTS = {
   // pixels qualify that the blur has nothing to spread and bloom is invisible.
   bloomThreshold: 0.4,
   bloomStrength: 1.0,
-  bloomRadius: 1.0,
+  // Width of the bloom's soft "veil" layer (in texels of the half-resolution
+  // bloom target, scaled by this slider). The kernel has a tight core plus
+  // this wide, low-contrast halo — that pairing is what makes the glow read as
+  // suspended mist rather than a hot streak. Bigger = wider, softer haze.
+  bloomRadius: 1.5,
 
   // simulation
   timeScale: 1.0,
@@ -168,7 +172,7 @@ export const SCHEMA = [
 
   ["Bloom", "bloomThreshold", "Bloom threshold", 0, 4, 0.05],
   ["Bloom", "bloomStrength", "Bloom strength", 0, 4, 0.05],
-  ["Bloom", "bloomRadius", "Bloom radius", 0.25, 4, 0.05],
+  ["Bloom", "bloomRadius", "Bloom radius", 0.25, 6, 0.05],
 
   ["Simulation", "timeScale", "Time scale", 0, 4, 0.05],
 ];
